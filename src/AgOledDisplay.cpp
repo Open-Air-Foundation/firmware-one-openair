@@ -1,5 +1,6 @@
 #include "AgOledDisplay.h"
 #include "Libraries/U8g2/src/U8g2lib.h"
+#include "Main/GoIaqs.h"
 #include "Main/utils.h"
 
 /** Cast U8G2 */
@@ -411,28 +412,100 @@ void OledDisplay::showDashboard(DashboardStatus status) {
         DISP()->drawUTF8(55, 61, "ug/m³");
       }
 
-      /** Draw tvocIndexlabel */
-      DISP()->setFont(u8g2_font_t0_12_tf);
-      DISP()->drawStr(100, 27, "VOC:");
+      if (config.getLedBarMode() == LedBarMode::LedBarModeIaqs) {
+        /** Draw IAQS panel (column 3 replaces VOC/NOx when LED bar mode
+         *  is set to iaqs). Three rows aligned with the CO2/PM2.5 column
+         *  rhythm: header (y=27), big score + grade letter (y=48),
+         *  dominant pollutant (y=61). */
+        const int IAQS_COL_X = 100;
+        const int IAQS_COL_W = 28;
+        const int SCORE_GRADE_GAP = 1;
+        const int ARROW_DOM_GAP = 2;
+        const int ARROW_DOM_BOTH_GAP = 1;
+        DISP()->setFont(u8g2_font_t0_12_tf);
+        DISP()->drawStr(IAQS_COL_X, 27, "IAQS");
 
-      /** Draw tvocIndexvalue */
-      int tvoc = round(value.getAverage(Measurements::TVOC));
-      if (utils::isValidVOC(tvoc)) {
-        sprintf(strBuf, "%d", tvoc);
-      } else {
-        sprintf(strBuf, "%s", "-");
-      }
-      DISP()->drawStr(100, 39, strBuf);
+        float pm25Avg = value.getAverage(Measurements::PM25);
+        if (config.hasSensorSHT && config.isPMCorrectionEnabled()) {
+          pm25Avg = value.getCorrectedPM25(true);
+        }
+        float co2Avg = value.getAverage(Measurements::CO2);
+        bool pmOk = utils::isValidPm((int)round(pm25Avg));
+        bool coOk = utils::isValidCO2((int)round(co2Avg));
 
-      /** Draw NOx label */
-      int nox = round(value.getAverage(Measurements::NOx));
-      DISP()->drawStr(100, 53, "NOx:");
-      if (utils::isValidNOx(nox)) {
-        sprintf(strBuf, "%d", nox);
+        if (!pmOk || !coOk) {
+          DISP()->setFont(u8g2_font_t0_22b_tf);
+          int scoreW = DISP()->getStrWidth("-");
+          DISP()->drawStr(IAQS_COL_X + ((IAQS_COL_W - scoreW) / 2), 48, "-");
+        } else {
+          int pmScore = GoIaqs::pm25Score(pm25Avg);
+          int coScore = GoIaqs::co2Score(co2Avg);
+          int totalIaqs = GoIaqs::totalScore(pmScore, coScore);
+          GoIaqs::Category cat = GoIaqs::categoryOf(totalIaqs);
+          GoIaqs::Dominant dom = GoIaqs::dominantOf(pmScore, coScore);
+
+          /** Row 2: big score + letter grade centered in the IAQS column. */
+          sprintf(strBuf, "%d", totalIaqs);
+          DISP()->setFont(u8g2_font_t0_22b_tf);
+          int scoreW = DISP()->getStrWidth(strBuf);
+
+          char gradeStr[2] = {GoIaqs::letterOf(cat), '\0'};
+          DISP()->setFont(u8g2_font_t0_12_tf);
+          int gradeW = DISP()->getStrWidth(gradeStr);
+
+          int scoreX = IAQS_COL_X +
+                       ((IAQS_COL_W - scoreW - SCORE_GRADE_GAP - gradeW) / 2);
+          DISP()->setFont(u8g2_font_t0_22b_tf);
+          DISP()->drawStr(scoreX, 48, strBuf);
+          DISP()->setFont(u8g2_font_t0_12_tf);
+          DISP()->drawStr(scoreX + scoreW + SCORE_GRADE_GAP, 48, gradeStr);
+
+          /** Row 3: dominant pollutant. */
+          const char *domStr = "BOTH";
+          if (dom == GoIaqs::DominantPm25) {
+            domStr = "PM";
+          } else if (dom == GoIaqs::DominantCo2) {
+            domStr = "CO2";
+          }
+          DISP()->setFont(u8g2_font_t0_12_tf);
+          const int ARROW_W = 5;
+          int arrowDomGap = (dom == GoIaqs::DominantBoth) ? ARROW_DOM_BOTH_GAP
+                                                          : ARROW_DOM_GAP;
+          int domW = DISP()->getStrWidth(domStr);
+          int domX = IAQS_COL_X +
+                     ((IAQS_COL_W - ARROW_W - arrowDomGap - domW) / 2);
+          int arrowY = 57;
+          DISP()->drawLine(domX, arrowY, domX + ARROW_W, arrowY);
+          DISP()->drawLine(domX + ARROW_W, arrowY, domX + ARROW_W - 2,
+                           arrowY - 2);
+          DISP()->drawLine(domX + ARROW_W, arrowY, domX + ARROW_W - 2,
+                           arrowY + 2);
+          DISP()->drawStr(domX + ARROW_W + arrowDomGap, 61, domStr);
+        }
       } else {
-        sprintf(strBuf, "%s", "-");
+        /** Draw tvocIndexlabel */
+        DISP()->setFont(u8g2_font_t0_12_tf);
+        DISP()->drawStr(100, 27, "VOC:");
+
+        /** Draw tvocIndexvalue */
+        int tvoc = round(value.getAverage(Measurements::TVOC));
+        if (utils::isValidVOC(tvoc)) {
+          sprintf(strBuf, "%d", tvoc);
+        } else {
+          sprintf(strBuf, "%s", "-");
+        }
+        DISP()->drawStr(100, 39, strBuf);
+
+        /** Draw NOx label */
+        int nox = round(value.getAverage(Measurements::NOx));
+        DISP()->drawStr(100, 53, "NOx:");
+        if (utils::isValidNOx(nox)) {
+          sprintf(strBuf, "%d", nox);
+        } else {
+          sprintf(strBuf, "%s", "-");
+        }
+        DISP()->drawStr(100, 63, strBuf);
       }
-      DISP()->drawStr(100, 63, strBuf);
     } while (DISP()->nextPage());
   } else if (ag->isBasic()) {
     ag->display.clear();
