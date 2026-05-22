@@ -415,10 +415,15 @@ void OledDisplay::showDashboard(DashboardStatus status) {
       if (config.getLedBarMode() == LedBarMode::LedBarModeIaqs) {
         /** Draw IAQS panel (column 3 replaces VOC/NOx when LED bar mode
          *  is set to iaqs). Three rows aligned with the CO2/PM2.5 column
-         *  rhythm: header (y=27), big score (y=48), dominant pollutant +
-         *  grade letter (y=61). */
+         *  rhythm: header (y=27), big score + grade letter (y=48),
+         *  dominant pollutant (y=61). */
+        const int IAQS_COL_X = 100;
+        const int IAQS_COL_W = 28;
+        const int SCORE_GRADE_GAP = 1;
+        const int ARROW_DOM_GAP = 2;
+        const int ARROW_DOM_BOTH_GAP = 1;
         DISP()->setFont(u8g2_font_t0_12_tf);
-        DISP()->drawStr(100, 27, "IAQS");
+        DISP()->drawStr(IAQS_COL_X, 27, "IAQS");
 
         float pm25Avg = value.getAverage(Measurements::PM25);
         if (config.hasSensorSHT && config.isPMCorrectionEnabled()) {
@@ -430,7 +435,8 @@ void OledDisplay::showDashboard(DashboardStatus status) {
 
         if (!pmOk || !coOk) {
           DISP()->setFont(u8g2_font_t0_22b_tf);
-          DISP()->drawStr(108, 48, "-");
+          int scoreW = DISP()->getStrWidth("-");
+          DISP()->drawStr(IAQS_COL_X + ((IAQS_COL_W - scoreW) / 2), 48, "-");
         } else {
           int pmScore = GoIaqs::pm25Score(pm25Avg);
           int coScore = GoIaqs::co2Score(co2Avg);
@@ -438,24 +444,43 @@ void OledDisplay::showDashboard(DashboardStatus status) {
           GoIaqs::Category cat = GoIaqs::categoryOf(totalIaqs);
           GoIaqs::Dominant dom = GoIaqs::dominantOf(pmScore, coScore);
 
-          /** Row 2: big score centered in the IAQS column. */
+          /** Row 2: big score + letter grade centered in the IAQS column. */
           sprintf(strBuf, "%d", totalIaqs);
           DISP()->setFont(u8g2_font_t0_22b_tf);
           int scoreW = DISP()->getStrWidth(strBuf);
-          int scoreX = 100 + ((28 - scoreW) / 2);
+
+          char gradeStr[2] = {GoIaqs::letterOf(cat), '\0'};
+          DISP()->setFont(u8g2_font_t0_12_tf);
+          int gradeW = DISP()->getStrWidth(gradeStr);
+
+          int scoreX = IAQS_COL_X +
+                       ((IAQS_COL_W - scoreW - SCORE_GRADE_GAP - gradeW) / 2);
+          DISP()->setFont(u8g2_font_t0_22b_tf);
           DISP()->drawStr(scoreX, 48, strBuf);
+          DISP()->setFont(u8g2_font_t0_12_tf);
+          DISP()->drawStr(scoreX + scoreW + SCORE_GRADE_GAP, 48, gradeStr);
 
           /** Row 3: dominant pollutant. */
-          const char *domStr = "EQ";
+          const char *domStr = "BOTH";
           if (dom == GoIaqs::DominantPm25) {
             domStr = "PM";
           } else if (dom == GoIaqs::DominantCo2) {
             domStr = "CO2";
           }
-          char gradeStr[2] = {GoIaqs::letterOf(cat), '\0'};
           DISP()->setFont(u8g2_font_t0_12_tf);
-          DISP()->drawStr(100, 61, domStr);
-          DISP()->drawStr(122, 61, gradeStr);
+          const int ARROW_W = 5;
+          int arrowDomGap = (dom == GoIaqs::DominantBoth) ? ARROW_DOM_BOTH_GAP
+                                                          : ARROW_DOM_GAP;
+          int domW = DISP()->getStrWidth(domStr);
+          int domX = IAQS_COL_X +
+                     ((IAQS_COL_W - ARROW_W - arrowDomGap - domW) / 2);
+          int arrowY = 57;
+          DISP()->drawLine(domX, arrowY, domX + ARROW_W, arrowY);
+          DISP()->drawLine(domX + ARROW_W, arrowY, domX + ARROW_W - 2,
+                           arrowY - 2);
+          DISP()->drawLine(domX + ARROW_W, arrowY, domX + ARROW_W - 2,
+                           arrowY + 2);
+          DISP()->drawStr(domX + ARROW_W + arrowDomGap, 61, domStr);
         }
       } else {
         /** Draw tvocIndexlabel */
