@@ -125,7 +125,7 @@ void Measurements::printCurrentAverage() {
     }
   }
 
-  if (config.hasSensorPMS1 || config.hasSensorSPS30) {
+  if (config.hasSensorPMS1 || config.hasSensorSPS30_1) {
     printCurrentPMAverage(1);
     if (!config.hasSensorSHT) {
       if (utils::isValidTemperature(_temperature[0].update.avg)) {
@@ -140,7 +140,7 @@ void Measurements::printCurrentAverage() {
       }
     }
   }
-  if (config.hasSensorPMS2) {
+  if (config.hasSensorPMS2 || config.hasSensorSPS30_2) {
     printCurrentPMAverage(2);
     if (!config.hasSensorSHT) {
       if (utils::isValidTemperature(_temperature[1].update.avg)) {
@@ -1161,38 +1161,39 @@ String Measurements::toString(bool localServer, AgFirmwareMode fwMode, int rssi)
 
 JSONVar Measurements::buildOutdoor(bool localServer, AgFirmwareMode fwMode) {
   JSONVar outdoor;
+  bool ch1HasPm = config.hasSensorPMS1 || config.hasSensorSPS30_1;
+  bool ch2HasPm = config.hasSensorPMS2 || config.hasSensorSPS30_2;
+
   if (fwMode == FW_MODE_O_1P || fwMode == FW_MODE_O_1PS || fwMode == FW_MODE_O_1PST) {
-    // buildPMS params:
-    /// Because only have 1 PMS, allCh is set to false
-    /// But enable temp hum from PMS
-    /// compensated values if requested by local server
-    /// Set ch based on hasSensorPMSx
-    if (config.hasSensorPMS1) {
+    // Single PM channel — pick whichever channel is populated
+    // Enable temp/hum from PMS; compensated values if requested by local server
+    if (ch1HasPm) {
       outdoor = buildPMS(1, false, true, localServer);
-      if (!localServer) {
+      // Firmware version only available for PMS5003T
+      if (!localServer && config.hasSensorPMS1) {
         outdoor[json_prop_pmFirmware] =
             pms5003TFirmwareVersion(ag->pms5003t_1.getFirmwareVersion());
       }
-    } else {
+    } else if (ch2HasPm) {
       outdoor = buildPMS(2, false, true, localServer);
-      if (!localServer) {
+      if (!localServer && config.hasSensorPMS2) {
         outdoor[json_prop_pmFirmware] =
             pms5003TFirmwareVersion(ag->pms5003t_2.getFirmwareVersion());
       }
     }
   } else {
-    // FW_MODE_O_1PPT && FW_MODE_O_1PP: Outdoor monitor that have 2 PMS sensor
-    // buildPMS params:
-    /// Have 2 PMS sensor, allCh is set to true (ch params ignored)
-    /// Enable temp hum from PMS
-    /// compensated values if requested by local server
+    // FW_MODE_O_1PPT / FW_MODE_O_1PP: two PM channels, average via allCh
     outdoor = buildPMS(1, true, true, localServer);
-    // PMS5003T version
+    // Per-channel firmware version — only for PMS5003T channels
     if (!localServer) {
-      outdoor["channels"]["1"][json_prop_pmFirmware] =
-          pms5003TFirmwareVersion(ag->pms5003t_1.getFirmwareVersion());
-      outdoor["channels"]["2"][json_prop_pmFirmware] =
-          pms5003TFirmwareVersion(ag->pms5003t_2.getFirmwareVersion());
+      if (config.hasSensorPMS1) {
+        outdoor["channels"]["1"][json_prop_pmFirmware] =
+            pms5003TFirmwareVersion(ag->pms5003t_1.getFirmwareVersion());
+      }
+      if (config.hasSensorPMS2) {
+        outdoor["channels"]["2"][json_prop_pmFirmware] =
+            pms5003TFirmwareVersion(ag->pms5003t_2.getFirmwareVersion());
+      }
     }
   }
 
@@ -1202,7 +1203,7 @@ JSONVar Measurements::buildOutdoor(bool localServer, AgFirmwareMode fwMode) {
 JSONVar Measurements::buildIndoor(bool localServer) {
   JSONVar indoor;
 
-  if (config.hasSensorPMS1 || config.hasSensorSPS30) {
+  if (config.hasSensorPMS1 || config.hasSensorSPS30_1) {
     // buildPMS params:
     /// PMS channel 1 (indoor only have 1 PMS; hence allCh false)
     /// Not include temperature and humidity from PMS sensor
@@ -1210,7 +1211,8 @@ JSONVar Measurements::buildIndoor(bool localServer) {
     indoor = buildPMS(1, false, false, true);
     if (!localServer && config.hasSensorPMS1) {
       // PMS firmware version only available for PMS5003
-      indoor[json_prop_pmFirmware] = this->pms5003FirmwareVersion(ag->pms5003.getFirmwareVersion());
+      indoor[json_prop_pmFirmware] =
+          this->pms5003FirmwareVersion(ag->pms5003.getFirmwareVersion());
     }
   }
 

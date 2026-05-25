@@ -6,9 +6,9 @@
 #endif
 
 AirGradient::AirGradient(BoardType type)
-    : pms5003(type), pms5003t_1(type), pms5003t_2(type), sps30(type), s8(type),
-      sgp41(type), display(type), boardType(type), button(type),
-      statusLed(type), ledBar(type), watchdog(type), sht(type) {}
+    : pms5003(type), pms5003t_1(type), pms5003t_2(type), sps30_1(type),
+      sps30_2(type), s8(type), sgp41(type), display(type), boardType(type),
+      button(type), statusLed(type), ledBar(type), watchdog(type), sht(type) {}
 
 /**
  * @brief Get pin number for I2C SDA
