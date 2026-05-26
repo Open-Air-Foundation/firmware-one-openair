@@ -107,6 +107,7 @@ private:
   bool _connected = false;
   int _consecutiveErrors = 0;
   BoardType _boardDef;
+  const BoardDef *_bsp = nullptr;
   SensirionUartSps30 _driver;
   HardwareSerial *_serial = nullptr;
 

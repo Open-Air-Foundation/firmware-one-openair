@@ -17,13 +17,33 @@ bool SPS30::begin(HardwareSerial &serial) {
     return true;
   }
 
+  _bsp = getBoardDef(_boardDef);
+  if (_bsp == nullptr) {
+    AgLog("Board [%d] not supported", _boardDef);
+    return false;
+  }
+
   _serial = &serial;
 
   // Fully reset the serial port — it may have been left at 9600 baud
   // with stale buffer data from a failed PMS5003 detection attempt.
   _serial->end();
   delay(100);
-  _serial->begin(115200);
+
+  // Serial0 (UART0) defaults map to the correct PM connector pins.
+  // Serial1 shares the S8 connector pins and needs explicit GPIO mapping,
+  // same as PMS5003T::begin() does.
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (_serial == &Serial0) {
+#else
+  if (_serial == &Serial) {
+#endif
+    _serial->begin(115200);
+  } else {
+    _serial->begin(115200, SERIAL_8N1, _bsp->SenseAirS8.uart_rx_pin,
+                   _bsp->SenseAirS8.uart_tx_pin);
+  }
+
   // Flush any garbage bytes left in the RX buffer
   while (_serial->available()) {
     _serial->read();
