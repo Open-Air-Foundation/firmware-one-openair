@@ -75,8 +75,10 @@ public:
   bool hasSensorS8 = true;
   bool hasSensorPMS1 = true;
   bool hasSensorPMS2 = true;
-  bool hasSensorSPS30 =
-      false; ///< SPS30 detected as PMS alternative (auto-detect)
+  bool hasSensorSPS30_1 =
+      false; ///< SPS30 detected on PM channel 1 (auto-detect)
+  bool hasSensorSPS30_2 =
+      false; ///< SPS30 detected on PM channel 2 (auto-detect)
   bool hasSensorSGP = true;
   bool hasSensorSHT = true;
 

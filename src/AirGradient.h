@@ -82,10 +82,16 @@ public:
   PMS5003T pms5003t_2;
 
   /**
-   * @brief Sensirion SPS30 particulate matter sensor (UART).
-   * Used as alternative to PMS5003 on ONE_INDOOR via auto-detection.
+   * @brief Sensirion SPS30 particulate matter sensor (UART), channel 1.
+   * Used as alternative PM sensor via auto-detection on Serial0.
    */
-  SPS30 sps30;
+  SPS30 sps30_1;
+
+  /**
+   * @brief Sensirion SPS30 particulate matter sensor (UART), channel 2.
+   * Used on OPEN_AIR_OUTDOOR when a second SPS30 is detected.
+   */
+  SPS30 sps30_2;
 
   /**
    * @brief SenseAirS8 CO2 sensor

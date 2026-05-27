@@ -140,7 +140,7 @@ static void configUpdateHandle(void);
 static void updateDisplayAndLedBar(void);
 static void updateTvoc(void);
 static void updatePm(void);
-static void updateSPS30(void);
+static void updateSPS30(SPS30 &sensor, int channel);
 static void sendDataToServer(void);
 static void tempHumUpdate(void);
 static void co2Update(void);
@@ -336,7 +336,7 @@ void loop() {
     co2Schedule.run();
   }
   if (configuration.hasSensorPMS1 || configuration.hasSensorPMS2 ||
-      configuration.hasSensorSPS30) {
+      configuration.hasSensorSPS30_1 || configuration.hasSensorSPS30_2) {
     pmsSchedule.run();
   }
   if (ag->isOne()) {
@@ -829,9 +829,9 @@ static void oneIndoorInit(void) {
     Serial.println("PMS5003 not found, trying SPS30...");
     configuration.hasSensorPMS1 = false;
 
-    if (ag->sps30.begin(Serial0)) {
+    if (ag->sps30_1.begin(Serial0)) {
       Serial.println("SPS30 detected on Serial0");
-      configuration.hasSensorSPS30 = true;
+      configuration.hasSensorSPS30_1 = true;
     } else {
       Serial.println("SPS30 not found either");
       dispSensorNotFound("PM sensor");
@@ -888,56 +888,100 @@ static void openAirInit(void) {
     }
   }
 
-  /** Attempt to detect PM sensors */
-  if (fwMode == FW_MODE_O_1PST) {
-    bool pmInitSuccess = false;
+  /**
+   * Attempt to detect PM sensors on available serial ports.
+   * Per-port order: PMS5003T first (@9600), fallback to SPS30 (@115200).
+   * For single-PM modes the detected sensor is always assigned to channel 1.
+   * For dual-PM modes Serial0 → channel 1, Serial1 → channel 2.
+   */
+  auto detectPmOnSerial = [](HardwareSerial &serial, PMS5003T &pms, SPS30 &sps,
+                             const char *portName) -> int {
+    // Returns: 0 = none, 1 = PMS5003T, 2 = SPS30
+    if (pms.begin(serial)) {
+      Serial.printf("Detected PMS5003T on %s\n", portName);
+      return 1;
+    }
+    Serial.printf("PMS5003T not found on %s, trying SPS30...\n", portName);
+    if (sps.begin(serial)) {
+      Serial.printf("Detected SPS30 on %s\n", portName);
+      return 2;
+    }
+    Serial.printf("No PM sensor detected on %s\n", portName);
+    return 0;
+  };
+
+  if (fwMode == FW_MODE_O_1PST || fwMode == FW_MODE_O_1PS) {
+    // Single PM channel expected — try Serial0 first, fallback Serial1
+    configuration.hasSensorPMS1 = false;
+    configuration.hasSensorPMS2 = false;
+    bool pmFound = false;
+
     if (serial0Available) {
-      if (ag->pms5003t_1.begin(Serial0) == false) {
-        configuration.hasSensorPMS1 = false;
-        Serial.println("No PM sensor detected on Serial0");
-      } else {
+      int result =
+          detectPmOnSerial(Serial0, ag->pms5003t_1, ag->sps30_1, "Serial0");
+      if (result == 1) {
+        configuration.hasSensorPMS1 = true;
         serial0Available = false;
-        pmInitSuccess = true;
-        Serial.println("Detected PM 1 on Serial0");
+        pmFound = true;
+      } else if (result == 2) {
+        configuration.hasSensorSPS30_1 = true;
+        serial0Available = false;
+        pmFound = true;
       }
     }
-    if (pmInitSuccess == false) {
-      if (serial1Available) {
-        if (ag->pms5003t_1.begin(Serial1) == false) {
-          configuration.hasSensorPMS1 = false;
-          Serial.println("No PM sensor detected on Serial1");
-        } else {
-          serial1Available = false;
-          Serial.println("Detected PM 1 on Serial1");
-        }
+    if (!pmFound && serial1Available) {
+      int result =
+          detectPmOnSerial(Serial1, ag->pms5003t_1, ag->sps30_1, "Serial1");
+      if (result == 1) {
+        configuration.hasSensorPMS1 = true;
+        serial1Available = false;
+      } else if (result == 2) {
+        configuration.hasSensorSPS30_1 = true;
+        serial1Available = false;
       }
     }
-    configuration.hasSensorPMS2 = false; // Disable PM2
   } else {
-    if (ag->pms5003t_1.begin(Serial0) == false) {
-      configuration.hasSensorPMS1 = false;
-      Serial.println("No PM sensor detected on Serial0");
-    } else {
-      Serial.println("Detected PM 1 on Serial0");
-    }
-    if (ag->pms5003t_2.begin(Serial1) == false) {
-      configuration.hasSensorPMS2 = false;
-      Serial.println("No PM sensor detected on Serial1");
-    } else {
-      Serial.println("Detected PM 2 on Serial1");
+    // Dual PM channel modes (O_1PPT / O_1PP) — Serial0 → ch1, Serial1 → ch2
+    configuration.hasSensorPMS1 = false;
+    configuration.hasSensorPMS2 = false;
+
+    // Channel 1 on Serial0
+    int result1 =
+        detectPmOnSerial(Serial0, ag->pms5003t_1, ag->sps30_1, "Serial0");
+    if (result1 == 1) {
+      configuration.hasSensorPMS1 = true;
+    } else if (result1 == 2) {
+      configuration.hasSensorSPS30_1 = true;
     }
 
+    // Channel 2 on Serial1
+    int result2 =
+        detectPmOnSerial(Serial1, ag->pms5003t_2, ag->sps30_2, "Serial1");
+    if (result2 == 1) {
+      configuration.hasSensorPMS2 = true;
+    } else if (result2 == 2) {
+      configuration.hasSensorSPS30_2 = true;
+    }
+
+    // Check if we should downgrade from two-PM to single-PM mode
     if (fwMode == FW_MODE_O_1PP) {
-      int count = (configuration.hasSensorPMS1 ? 1 : 0) + (configuration.hasSensorPMS2 ? 1 : 0);
-      if (count == 1) {
+      bool ch1HasPm =
+          configuration.hasSensorPMS1 || configuration.hasSensorSPS30_1;
+      bool ch2HasPm =
+          configuration.hasSensorPMS2 || configuration.hasSensorSPS30_2;
+      if (ch1HasPm != ch2HasPm) {
         fwMode = FW_MODE_O_1P;
       }
     }
   }
 
-  /** update the PMS poll period base on fw mode and sensor available */
-  if (fwMode != FW_MODE_O_1PST) {
-    if (configuration.hasSensorPMS1 && configuration.hasSensorPMS2) {
+  /** Update the PMS poll period based on fw mode and sensor availability */
+  if (fwMode != FW_MODE_O_1PST && fwMode != FW_MODE_O_1PS) {
+    bool ch1HasPm =
+        configuration.hasSensorPMS1 || configuration.hasSensorSPS30_1;
+    bool ch2HasPm =
+        configuration.hasSensorPMS2 || configuration.hasSensorSPS30_2;
+    if (ch1HasPm && ch2HasPm) {
       pmsSchedule.setPeriod(2000);
     }
   }
@@ -1316,52 +1360,53 @@ static void updatePMS5003() {
   }
 }
 
-static void updateSPS30(void) {
-  if (ag->sps30.readValues()) {
+static void updateSPS30(SPS30 &sensor, int channel) {
+  if (sensor.readValues()) {
     // Mass concentrations — mapped to both Ae and SP (SPS30 has no distinction)
-    measurements.update(Measurements::PM01, ag->sps30.getPm01Ae());
-    measurements.update(Measurements::PM25, ag->sps30.getPm25Ae());
-    measurements.update(Measurements::PM10, ag->sps30.getPm10Ae());
-    measurements.update(Measurements::PM01_SP, ag->sps30.getPm01Sp());
-    measurements.update(Measurements::PM25_SP, ag->sps30.getPm25Sp());
-    measurements.update(Measurements::PM10_SP, ag->sps30.getPm10Sp());
+    measurements.update(Measurements::PM01, sensor.getPm01Ae(), channel);
+    measurements.update(Measurements::PM25, sensor.getPm25Ae(), channel);
+    measurements.update(Measurements::PM10, sensor.getPm10Ae(), channel);
+    measurements.update(Measurements::PM01_SP, sensor.getPm01Sp(), channel);
+    measurements.update(Measurements::PM25_SP, sensor.getPm25Sp(), channel);
+    measurements.update(Measurements::PM10_SP, sensor.getPm10Sp(), channel);
 
     // Number concentrations (already converted to #/0.1L by wrapper)
-    measurements.update(Measurements::PM05_PC, ag->sps30.getPm05ParticleCount());
-    measurements.update(Measurements::PM01_PC, ag->sps30.getPm01ParticleCount());
-    measurements.update(Measurements::PM25_PC, ag->sps30.getPm25ParticleCount());
-    measurements.update(Measurements::PM10_PC, ag->sps30.getPm10ParticleCount());
+    measurements.update(Measurements::PM05_PC, sensor.getPm05ParticleCount(), channel);
+    measurements.update(Measurements::PM01_PC, sensor.getPm01ParticleCount(), channel);
+    measurements.update(Measurements::PM25_PC, sensor.getPm25ParticleCount(), channel);
+    measurements.update(Measurements::PM10_PC, sensor.getPm10ParticleCount(), channel);
   } else {
-    measurements.update(Measurements::PM01, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM25, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM10, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM01_SP, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM25_SP, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM10_SP, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM01_PC, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM25_PC, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM5_PC, utils::getInvalidPmValue());
-    measurements.update(Measurements::PM10_PC, utils::getInvalidPmValue());
+    measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM01_SP, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM25_SP, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM10_SP, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM01_PC, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM25_PC, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM5_PC, utils::getInvalidPmValue(), channel);
+    measurements.update(Measurements::PM10_PC, utils::getInvalidPmValue(), channel);
   }
 }
 
 static void updatePm(void) {
   if (ag->isOne()) {
-    if (configuration.hasSensorSPS30) {
-      updateSPS30();
+    if (configuration.hasSensorSPS30_1) {
+      updateSPS30(ag->sps30_1, 1);
     } else {
       updatePMS5003();
     }
     return;
   }
 
-  // Open Air Monitor series, can have two PMS5003T sensor
-  bool newPMS1Value = false;
-  bool newPMS2Value = false;
+  // Open Air Monitor series — each channel can be PMS5003T or SPS30.
+  // Track which channels produced valid PMS5003T T/RH for SGP41 compensation.
+  bool newPmsTempHumCh1 = false;
+  bool newPmsTempHumCh2 = false;
 
-  // Read PMS channel 1 if available
-  int channel = 1;
+  // ---- Channel 1 ----
   if (configuration.hasSensorPMS1) {
+    int channel = 1;
     if (ag->pms5003t_1.connected()) {
       measurements.update(Measurements::PM01, ag->pms5003t_1.getPm01Ae(), channel);
       measurements.update(Measurements::PM25, ag->pms5003t_1.getPm25Ae(), channel);
@@ -1375,11 +1420,8 @@ static void updatePm(void) {
       measurements.update(Measurements::PM25_PC, ag->pms5003t_1.getPm25ParticleCount(), channel);
       measurements.update(Measurements::Temperature, ag->pms5003t_1.getTemperature(), channel);
       measurements.update(Measurements::Humidity, ag->pms5003t_1.getRelativeHumidity(), channel);
-
-      // flag that new valid PMS value exists
-      newPMS1Value = true;
+      newPmsTempHumCh1 = true;
     } else {
-      // PMS channel 1 now is not connected, update using invalid value
       measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
@@ -1393,11 +1435,13 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, utils::getInvalidTemperature(), channel);
       measurements.update(Measurements::Humidity, utils::getInvalidHumidity(), channel);
     }
+  } else if (configuration.hasSensorSPS30_1) {
+    updateSPS30(ag->sps30_1, 1);
   }
 
-  // Read PMS channel 2 if available
-  channel = 2;
+  // ---- Channel 2 ----
   if (configuration.hasSensorPMS2) {
+    int channel = 2;
     if (ag->pms5003t_2.connected()) {
       measurements.update(Measurements::PM01, ag->pms5003t_2.getPm01Ae(), channel);
       measurements.update(Measurements::PM25, ag->pms5003t_2.getPm25Ae(), channel);
@@ -1411,11 +1455,8 @@ static void updatePm(void) {
       measurements.update(Measurements::PM25_PC, ag->pms5003t_2.getPm25ParticleCount(), channel);
       measurements.update(Measurements::Temperature, ag->pms5003t_2.getTemperature(), channel);
       measurements.update(Measurements::Humidity, ag->pms5003t_2.getRelativeHumidity(), channel);
-
-      // flag that new valid PMS value exists
-      newPMS2Value = true;
+      newPmsTempHumCh2 = true;
     } else {
-      // PMS channel 2 now is not connected, update using invalid value
       measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
@@ -1429,30 +1470,32 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, utils::getInvalidTemperature(), channel);
       measurements.update(Measurements::Humidity, utils::getInvalidHumidity(), channel);
     }
+  } else if (configuration.hasSensorSPS30_2) {
+    updateSPS30(ag->sps30_2, 2);
   }
 
+  // SGP41 compensation — only uses T/RH from PMS5003T channels (SPS30 has no T/RH)
   if (configuration.hasSensorSGP) {
-    float temp, hum;
-    if (newPMS1Value && newPMS2Value) {
-      // Both PMS has new valid value
-      temp = (measurements.getFloat(Measurements::Temperature, 1) +
-              measurements.getFloat(Measurements::Temperature, 2)) /
-             2.0f;
-      hum = (measurements.getFloat(Measurements::Humidity, 1) +
-             measurements.getFloat(Measurements::Humidity, 2)) /
-            2.0f;
-    } else if (newPMS1Value) {
-      // Only PMS1 has new valid value
-      temp = measurements.getFloat(Measurements::Temperature, 1);
-      hum = measurements.getFloat(Measurements::Humidity, 1);
-    } else {
-      // Only PMS2 has new valid value
-      temp = measurements.getFloat(Measurements::Temperature, 2);
-      hum = measurements.getFloat(Measurements::Humidity, 2);
+    if (newPmsTempHumCh1 || newPmsTempHumCh2) {
+      float temp, hum;
+      if (newPmsTempHumCh1 && newPmsTempHumCh2) {
+        temp = (measurements.getFloat(Measurements::Temperature, 1) +
+                measurements.getFloat(Measurements::Temperature, 2)) /
+               2.0f;
+        hum = (measurements.getFloat(Measurements::Humidity, 1) +
+               measurements.getFloat(Measurements::Humidity, 2)) /
+              2.0f;
+      } else if (newPmsTempHumCh1) {
+        temp = measurements.getFloat(Measurements::Temperature, 1);
+        hum = measurements.getFloat(Measurements::Humidity, 1);
+      } else {
+        temp = measurements.getFloat(Measurements::Temperature, 2);
+        hum = measurements.getFloat(Measurements::Humidity, 2);
+      }
+      ag->sgp41.setCompensationTemperatureHumidity(temp, hum);
     }
-
-    // Update compensation temperature and humidity for SGP41
-    ag->sgp41.setCompensationTemperatureHumidity(temp, hum);
+    // When no PMS5003T channel provides T/RH (e.g. 2× SPS30), SGP41 keeps
+    // its previous compensation values (default 25 °C / 50 %RH on first run).
   }
 }
 

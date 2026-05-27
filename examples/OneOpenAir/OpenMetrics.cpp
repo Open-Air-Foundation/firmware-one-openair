@@ -77,14 +77,28 @@ String OpenMetrics::getPayload(void) {
   int nox = utils::getInvalidNOx();
   int noxRaw = utils::getInvalidNOx();
 
+  // Convenience flags: does this channel have any PM sensor?
+  bool ch1HasPm = config.hasSensorPMS1 || config.hasSensorSPS30_1;
+  bool ch2HasPm = config.hasSensorPMS2 || config.hasSensorSPS30_2;
+
   // Get values
-  if (config.hasSensorPMS1 && config.hasSensorPMS2) {
-    _temp = (measure.getFloat(Measurements::Temperature, 1) +
-             measure.getFloat(Measurements::Temperature, 2)) /
-            2.0f;
-    _hum = (measure.getFloat(Measurements::Humidity, 1) +
-            measure.getFloat(Measurements::Humidity, 2)) /
-           2.0f;
+  if (ch1HasPm && ch2HasPm) {
+    // Two PM channels — average T/RH only from PMS5003T channels
+    if (config.hasSensorPMS1 && config.hasSensorPMS2) {
+      _temp = (measure.getFloat(Measurements::Temperature, 1) +
+               measure.getFloat(Measurements::Temperature, 2)) /
+              2.0f;
+      _hum = (measure.getFloat(Measurements::Humidity, 1) +
+              measure.getFloat(Measurements::Humidity, 2)) /
+             2.0f;
+    } else if (config.hasSensorPMS1) {
+      _temp = measure.getFloat(Measurements::Temperature, 1);
+      _hum = measure.getFloat(Measurements::Humidity, 1);
+    } else if (config.hasSensorPMS2) {
+      _temp = measure.getFloat(Measurements::Temperature, 2);
+      _hum = measure.getFloat(Measurements::Humidity, 2);
+    }
+    // PM values averaged across both channels regardless of brand
     pm01 = (measure.get(Measurements::PM01, 1) + measure.get(Measurements::PM01, 2)) / 2.0f;
     float correctedPm25_1 = measure.getCorrectedPM25(false, 1);
     float correctedPm25_2 = measure.getCorrectedPM25(false, 2);
@@ -100,7 +114,7 @@ String OpenMetrics::getPayload(void) {
         _hum = measure.getFloat(Measurements::Humidity);
       }
 
-      if (config.hasSensorPMS1) {
+      if (ch1HasPm) {
         pm01 = measure.get(Measurements::PM01);
         float correctedPm = measure.getCorrectedPM25(false, 1);
         pm25 = round(correctedPm);
@@ -108,18 +122,23 @@ String OpenMetrics::getPayload(void) {
         pm03PCount = measure.get(Measurements::PM03_PC);
       }
     } else {
-      if (config.hasSensorPMS1) {
-        _temp = measure.getFloat(Measurements::Temperature, 1);
-        _hum = measure.getFloat(Measurements::Humidity, 1);
+      // Outdoor single-channel: T/RH only from PMS5003T, PM from any sensor
+      if (ch1HasPm) {
+        if (config.hasSensorPMS1) {
+          _temp = measure.getFloat(Measurements::Temperature, 1);
+          _hum = measure.getFloat(Measurements::Humidity, 1);
+        }
         pm01 = measure.get(Measurements::PM01, 1);
         float correctedPm = measure.getCorrectedPM25(false, 1);
         pm25 = round(correctedPm);
         pm10 = measure.get(Measurements::PM10, 1);
         pm03PCount = measure.get(Measurements::PM03_PC, 1);
       }
-      if (config.hasSensorPMS2) {
-        _temp = measure.getFloat(Measurements::Temperature, 2);
-        _hum = measure.getFloat(Measurements::Humidity, 2);
+      if (ch2HasPm) {
+        if (config.hasSensorPMS2) {
+          _temp = measure.getFloat(Measurements::Temperature, 2);
+          _hum = measure.getFloat(Measurements::Humidity, 2);
+        }
         pm01 = measure.get(Measurements::PM01, 2);
         float correctedPm = measure.getCorrectedPM25(false, 2);
         pm25 = round(correctedPm);
@@ -154,7 +173,7 @@ String OpenMetrics::getPayload(void) {
   }
 
   // Add measurements that valid to the metrics
-  if (config.hasSensorPMS1 || config.hasSensorPMS2) {
+  if (ch1HasPm || ch2HasPm) {
     if (utils::isValidPm(pm01)) {
       add_metric("pm1",
                  "PM1.0 concentration as measured by the AirGradient PMS "
