@@ -16,6 +16,8 @@
 #endif // ESP32
 
 #define WIFI_CONNECT_COUNTDOWN_MAX 180
+#define WIFI_PROVISION_CONNECT_TIMEOUT_SEC 30
+#define WIFI_PROVISION_CONNECT_TIMEOUT_MS (WIFI_PROVISION_CONNECT_TIMEOUT_SEC * 1000)
 #define WIFI_HOTSPOT_PASSWORD_DEFAULT "cleanair"
 
 #define WIFI() ((WiFiManager *)(this->wifi))
@@ -232,7 +234,8 @@ bool WifiConnector::connect(String modelName) {
         sm.displayHandle(AgStateMachineWiFiManagerStaConnecting);
 
         uint32_t startTime = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < 15000) {
+        while (WiFi.status() != WL_CONNECTED &&
+               (millis() - startTime) < WIFI_PROVISION_CONNECT_TIMEOUT_MS) {
           // Led animations
           if ((millis() - ledPeriod) >= 100) {
             ledPeriod = millis();
@@ -540,7 +543,7 @@ void WifiConnector::setDefault(void) {
 
 void WifiConnector::setupProvisionByPortal(WiFiManagerParameter *disableCloudParam, WiFiManagerParameter *disableCloudInfo) {
   WIFI()->setConfigPortalBlocking(false);
-  WIFI()->setConnectTimeout(15);
+  WIFI()->setConnectTimeout(WIFI_PROVISION_CONNECT_TIMEOUT_SEC);
   WIFI()->setTimeout(WIFI_CONNECT_COUNTDOWN_MAX);
   WIFI()->setBreakAfterConfig(true);
 
