@@ -561,7 +561,7 @@ void WifiConnector::setupProvisionByPortal(WiFiManagerParameter *disableCloudPar
   WIFI()->addParameter(disableCloudParam);
   WIFI()->addParameter(disableCloudInfo);
 
-  WIFI()->autoConnect(ssid.c_str(), WIFI_HOTSPOT_PASSWORD_DEFAULT);
+  WIFI()->startConfigPortal(ssid.c_str(), WIFI_HOTSPOT_PASSWORD_DEFAULT);
 
   logInfo("Wait for configure portal");
 }
