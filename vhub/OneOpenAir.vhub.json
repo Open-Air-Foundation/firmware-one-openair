@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "90e8569-wip",
+  "rev": "7c00651-wip",
   "product": {
     "slug": "one-open-air",
     "name": "ONE Indoor & Open Air",
@@ -152,7 +152,7 @@
       "applies_to": ["ONE_INDOOR"],
       "description": "If httpDomain is configured, OLED indicates a custom server target during boot",
       "expected_result": "When httpDomain is non-empty in config, OLED shows the three-line message \"HTTP domain name\" / \"using local\" / \"configuration\" and serial log prints \"HTTP domain name is set to: <domain>\". When empty/unset, no custom-domain OLED message is shown.",
-      "notes": "Requires: OLED + serial log. Set httpDomain via /config PUT or cloud, then reboot."
+      "notes": "Requires: OLED + serial log. Set httpDomain via /config PUT or cloud, then reboot. Note: on cellular, httpDomain does not redirect measures/config (those use CoAP to a fixed host); the OLED message still appears."
     },
     {
       "id": "boot.network-options.auto-select",
@@ -178,8 +178,8 @@
       "sub_category": "First server communication",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "After network is up at boot, device fetches configuration from server",
-      "expected_result": "Serial log shows GET to /sensors/airgradient:<serial>/one/config with response 200 when registered or 400 when not registered. Configuration values are applied to runtime state when fetch and parse succeed.",
-      "notes": "Requires: serial log + working network. Must complete before runtime begins."
+      "expected_result": "On WiFi, serial log shows an HTTPS GET to /sensors/airgradient:<serial>/one/config with response 200 when registered or 400 when not registered. On cellular, the fetch goes over CoAP (log \"CoAP fetch configuration from <host>:5683\" then \"CoAP request successful\"); a not-registered device is surfaced via the CoAP response code rather than HTTP 400. Configuration values are applied to runtime state when fetch and parse succeed.",
+      "notes": "Requires: serial log + working network. Must complete before runtime begins. Cellular uses CoAP (coapFetchConfig); WiFi uses HTTPS (httpFetchConfig)."
     },
     {
       "id": "boot.first-server-comm.boot-post-wifi",
@@ -196,8 +196,8 @@
       "sub_category": "First server communication",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "On Cellular, the boot POST is sent after a ~20s delay and carries a full measurement cycle",
-      "expected_result": "Serial log shows \"Prepare first measures cycle to send on boot for 20s\", then ~20s later \"New measurement cycle added to queue\", followed by a cellular CSV POST (interval, current measurement fields, cellular signal).",
-      "notes": "Requires: serial log + cellular network. Unlike WiFi, cellular boot POST carries a full measurement cycle, not a hello payload. Timing approximate (±5s)."
+      "expected_result": "Serial log shows \"Prepare first measures cycle to send on boot for 20s\", then ~20s later \"New measurement cycle added to queue\", followed by a binary CoAP post of the measurement cycle (coapPostMeasures to coap.airgradient.com / IP:5683).",
+      "notes": "Requires: serial log + cellular network. Unlike WiFi, cellular boot POST carries a full measurement cycle as a binary CoAP payload, not a hello payload. Timing approximate (±5s)."
     },
     {
       "id": "boot.first-server-comm.ota-check",
@@ -839,13 +839,22 @@
       "notes": "Requires: serial log + MQTT broker reachable from the device's LAN. MQTT is not available for cellular (log: \"MQTT not available for cellular options\")."
     },
     {
+      "id": "server-comm.wifi.dns-multi-a-record-failover",
+      "category": "AG Server Communication",
+      "sub_category": "WiFi transmission",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "On WiFi, HTTPS requests fail over across multiple DNS A records before falling back to the hostname",
+      "expected_result": "For HTTPS fetch-config / post-measures, the WiFi client resolves all IPv4 A records for the server host via a single raw UDP DNS query, shuffles them, and sticks to one IP while it works (log \"TLS up to <ip>\"). On transport/TLS failure it advances to the next IP; after every IP fails it falls back to a hostname-based connection (log \"All N IP(s) failed; falling back to hostname resolution\") and refreshes the IP list on success. TLS SNI and certificate verification always use the hostname, even when connecting to an IP.",
+      "notes": "Requires: serial log + a server host with multiple A records, plus the ability to blackhole specific IPs (e.g. firewall rules) to force per-IP failures. Arduino/WiFi path only; cellular is unaffected."
+    },
+    {
       "id": "server-comm.cellular.measurement-cycle-3min",
       "category": "AG Server Communication",
       "sub_category": "Cellular transmission",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "On cellular, a measurement cycle is captured every 3 minutes and added to the queue",
-      "expected_result": "Serial log shows \"New measurement cycle added to queue\" every 3 minutes (CELLULAR_MEASUREMENT_INTERVAL = 180000 ms). Each cycle captures the current sensor values plus the cellular signal strength converted to RSSI via csqToDbm().",
-      "notes": "Requires: serial log + cellular network. The queue accumulates cycles until the transmission condition is met."
+      "expected_result": "Serial log shows \"New measurement cycle added to queue\" every 3 minutes (CELLULAR_MEASUREMENT_INTERVAL = 180000 ms). Each cycle captures the current sensor values into the cached payload buffer. The cellular signal is not stored per cycle; it is applied once (latest csqToDbm value) when the batch is posted.",
+      "notes": "Requires: serial log + cellular network. The payload buffer accumulates cycles (cap 80, oldest dropped when full) until the transmission condition is met."
     },
     {
       "id": "server-comm.cellular.post-when-queue-divisible-by-3",
@@ -853,7 +862,7 @@
       "sub_category": "Cellular transmission",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "On cellular, measures are posted when the queue size is divisible by 3",
-      "expected_result": "The transmission schedule runs every 3 minutes (CELLULAR_TRANSMISSION_INTERVAL). On each run, postUsingCellular checks if measurementCycleQueue.size() % 3 == 0. If not, log \"Not ready to transmit, queue size are <N>\". If divisible, a CSV payload is built from all queued cycles (interval in seconds + per-cycle fields) and POSTed. On success, the queue is cleared.",
+      "expected_result": "The transmission schedule runs every 3 minutes (CELLULAR_TRANSMISSION_INTERVAL). On each run, postUsingCellular checks if the buffered cycle count % 3 == 0. If not, log \"Not ready to transmit, queue size are <N>\". If divisible, a binary AirgradientPayload is built from all buffered cycles (measure interval + per-cycle fields + latest signal) and sent via CoAP (coapPostMeasures). On success, the buffer is cleared (bufferCount reset to 0).",
       "notes": "Requires: serial log + cellular. Because measurement and transmission intervals are both 3 min, the queue typically hits size 1 at each transmission window. The divisible-by-3 condition means the first automatic transmission fires after 3 cycles (9 min), unless forcePost is used (boot POST)."
     },
     {
@@ -862,8 +871,17 @@
       "sub_category": "Cellular transmission",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "On cellular, configuration is fetched from the AG server every 30 minutes",
-      "expected_result": "Serial log shows fetch-config executing on a 30-minute schedule (CELLULAR_SERVER_CONFIG_SYNC_INTERVAL = 1800000 ms). Same parsing and configurationControl checks as WiFi.",
+      "expected_result": "Serial log shows CoAP fetch-config (coapFetchConfig) executing on a 30-minute schedule (CELLULAR_SERVER_CONFIG_SYNC_INTERVAL = 1800000 ms). Same parsing and configurationControl checks as WiFi.",
       "notes": "Requires: serial log + cellular. The longer interval reduces cellular data usage."
+    },
+    {
+      "id": "server-comm.cellular.buffer-accumulate-and-flush-on-recovery",
+      "category": "AG Server Communication",
+      "sub_category": "Cellular transmission",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "During a cellular outage, measurement cycles are cached and all are posted once connectivity recovers",
+      "expected_result": "While the cellular link is down, measurement cycles keep being captured every 3 minutes (\"New measurement cycle added to queue\") and accumulate in the cache (up to 80 cycles; the oldest is dropped once full). No successful post occurs during the outage. When connectivity is restored, the next transmission sends the entire cached batch in a single CoAP transfer (block-wise if larger than one packet) and the cache is cleared.",
+      "notes": "Requires: serial log + cellular. Reproduce by removing coverage for a few hours (e.g. pull the antenna / SIM after registration), let cycles accumulate, then restore coverage and confirm a single flush of all buffered cycles followed by an empty cache."
     },
     {
       "id": "server-comm.dashboard-values-match",
@@ -871,7 +889,7 @@
       "sub_category": "Data integrity",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "Values shown on the AirGradient dashboard match the payload that was POSTed",
-      "expected_result": "For WiFi, compare the serial log PAYLOAD JSON against dashboard readings for the same POST timestamp; valid sensor fields, WiFi RSSI, and boot/bootCount should correspond, allowing for dashboard-side conversions such as AQI. For cellular, compare the posted CSV measurement-cycle payload fields against dashboard readings; cellular payload does not include bootCount.",
+      "expected_result": "For WiFi, compare the serial log PAYLOAD JSON against dashboard readings for the same POST timestamp; valid sensor fields, WiFi RSSI, and boot/bootCount should correspond, allowing for dashboard-side conversions such as AQI. For cellular, compare the posted binary CoAP measurement-cycle payload fields against dashboard readings; the cellular payload does not include bootCount.",
       "notes": "Requires: serial log + dashboard access. Best checked immediately after a POST to avoid stale-cache mismatches."
     },
     {
@@ -879,9 +897,9 @@
       "category": "AG Server Communication",
       "sub_category": "Extended payload",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
-      "description": "When extendedPmMeasures is enabled, extra PM fields are included in the POST payload",
-      "expected_result": "On cellular, when extendedPmMeasures=true, extra PM particle-count and standard-particle fields are appended to each CSV measurement cycle. On WiFi, extendedPmMeasures does not change measurements.toString(); JSON PM fields are included based on sensor availability/validity regardless of the flag.",
-      "notes": "Requires: serial log + extendedPmMeasures enabled in the server config. Cellular-specific: compare CSV payload with and without the flag."
+      "description": "All valid PM fields are included in the POST payload",
+      "expected_result": "On cellular, the binary CoAP payload encodes every valid PM field (particle counts and standard-particle values); whether a field is sent depends only on its validity, not on the extendedPmMeasures flag. On WiFi, measurements.toString() likewise includes JSON PM fields based on sensor availability/validity.",
+      "notes": "Requires: serial log. Field inclusion is driven purely by validity on both transports; extendedPmMeasures does not change the payload."
     },
     {
       "id": "server-comm.cloud-connection-disabled",
@@ -889,7 +907,7 @@
       "sub_category": "Suppression",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "When disableCloudConnection is true, all AG server traffic is suppressed",
-      "expected_result": "With disableCloudConnection=true on WiFi, boot POST, config fetch, scheduled transmission, and OTA are skipped; local server endpoints and MQTT still function. At runtime, the networking task skips config/transmission/OTA schedules. On cellular, note current code still performs the initial boot httpFetchConfig() unless configurationControl=local; scheduled traffic is skipped afterward.",
+      "expected_result": "With disableCloudConnection=true on WiFi, boot POST, config fetch, scheduled transmission, and OTA are skipped; local server endpoints and MQTT still function. At runtime, the networking task skips config/transmission/OTA schedules. On cellular, note current code still performs the initial boot CoAP fetch-config (coapFetchConfig) unless configurationControl=local; scheduled traffic is skipped afterward.",
       "notes": "Requires: serial log + disableCloudConnection set via the WiFi portal checkbox. The flag overrides both configurationControl and postDataToAirGradient."
     },
     {
@@ -1033,8 +1051,8 @@
       "sub_category": "Server target",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "Changing httpDomain redirects AG client and OTA traffic to the custom domain",
-      "expected_result": "PUT {\"httpDomain\":\"custom.example.com\"} to /config. The firmware applies agClient->setHttpDomain() and serial log shows \"HTTP domain name set to: custom.example.com\". Subsequent fetch-config, post-measures, and OTA requests target that domain. Setting to empty string reverts to the default AirGradient domain.",
-      "notes": "Requires: serial log. The domain change takes effect on the next scheduled request, not retroactively."
+      "expected_result": "PUT {\"httpDomain\":\"custom.example.com\"} to /config. The firmware applies agClient->setHttpDomain() and serial log shows \"HTTP domain name set to: custom.example.com\". On WiFi, subsequent fetch-config and post-measures target that domain; OTA targets it on both transports. On cellular, measures and config use CoAP to a fixed host and are NOT affected by httpDomain (only cellular OTA is). Setting to empty string reverts to the default AirGradient domain.",
+      "notes": "Requires: serial log. The domain change takes effect on the next scheduled request, not retroactively. There is currently no config override for the CoAP host, so a custom domain does not redirect cellular measures/config."
     },
     {
       "id": "config-effect.post-data-to-airgradient",
