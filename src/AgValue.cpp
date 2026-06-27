@@ -906,176 +906,46 @@ Measurements::Measures Measurements::getMeasures() {
   return mc;
 }
 
-std::string Measurements::buildMeasuresPayload(Measures &mc, bool extendedPmMeasures) {
-  std::ostringstream oss;
-
-  // CO2
-  if (utils::isValidCO2(mc.co2)) {
-    oss << std::round(mc.co2);
+float Measurements::avgTempHum(float a, float b, bool (*isValid)(float), float invalid) {
+  bool va = isValid(a), vb = isValid(b);
+  if (va && vb) {
+    return (a + b) / 2.0f;
   }
-
-  oss << ",";
-
-  // Temperature
-  if (utils::isValidTemperature(mc.temperature[0]) &&
-      utils::isValidTemperature(mc.temperature[1])) {
-    float temp = (mc.temperature[0] + mc.temperature[1]) / 2.0f;
-    oss << std::round(temp * 10);
-  } else if (utils::isValidTemperature(mc.temperature[0])) {
-    oss << std::round(mc.temperature[0] * 10);
-  } else if (utils::isValidTemperature(mc.temperature[1])) {
-    oss << std::round(mc.temperature[1] * 10);
+  if (va) {
+    return a;
   }
-
-  oss << ",";
-
-  // Humidity
-  if (utils::isValidHumidity(mc.humidity[0]) && utils::isValidHumidity(mc.humidity[1])) {
-    float hum = (mc.humidity[0] + mc.humidity[1]) / 2.0f;
-    oss << std::round(hum * 10);
-  } else if (utils::isValidHumidity(mc.humidity[0])) {
-    oss << std::round(mc.humidity[0] * 10);
-  } else if (utils::isValidHumidity(mc.humidity[1])) {
-    oss << std::round(mc.humidity[1] * 10);
+  if (vb) {
+    return b;
   }
+  return invalid;
+}
 
-  oss << ",";
-
-  /// PM1.0 atmospheric environment
-  if (utils::isValidPm(mc.pm_01[0]) && utils::isValidPm(mc.pm_01[1])) {
-    float pm01 = (mc.pm_01[0] + mc.pm_01[1]) / 2.0f;
-    oss << std::round(pm01 * 10);
-  } else if (utils::isValidPm(mc.pm_01[0])) {
-    oss << std::round(mc.pm_01[0] * 10);
-  } else if (utils::isValidPm(mc.pm_01[1])) {
-    oss << std::round(mc.pm_01[1] * 10);
+float Measurements::avgPm(float a, float b) {
+  bool va = utils::isValidPm(a), vb = utils::isValidPm(b);
+  if (va && vb) {
+    return (a + b) / 2.0f;
   }
-
-  oss << ",";
-
-  /// PM2.5 atmospheric environment
-  if (utils::isValidPm(mc.pm_25[0]) && utils::isValidPm(mc.pm_25[1])) {
-    float pm25 = (mc.pm_25[0] + mc.pm_25[1]) / 2.0f;
-    oss << std::round(pm25 * 10);
-  } else if (utils::isValidPm(mc.pm_25[0])) {
-    oss << std::round(mc.pm_25[0] * 10);
-  } else if (utils::isValidPm(mc.pm_25[1])) {
-    oss << std::round(mc.pm_25[1] * 10);
+  if (va) {
+    return a;
   }
-
-  oss << ",";
-
-  /// PM10 atmospheric environment
-  if (utils::isValidPm(mc.pm_10[0]) && utils::isValidPm(mc.pm_10[1])) {
-    float pm10 = (mc.pm_10[0] + mc.pm_10[1]) / 2.0f;
-    oss << std::round(pm10 * 10);
-  } else if (utils::isValidPm(mc.pm_10[0])) {
-    oss << std::round(mc.pm_10[0] * 10);
-  } else if (utils::isValidPm(mc.pm_10[1])) {
-    oss << std::round(mc.pm_10[1] * 10);
+  if (vb) {
+    return b;
   }
+  return static_cast<float>(utils::getInvalidPmValue());
+}
 
-  oss << ",";
-
-  // TVOC
-  if (utils::isValidVOC(mc.tvoc)) {
-    oss << std::round(mc.tvoc);
+int Measurements::avgCount(float a, float b) {
+  bool va = utils::isValidPm03Count(a), vb = utils::isValidPm03Count(b);
+  if (va && vb) {
+    return static_cast<int>(((a + b) / 2.0f) + 0.5f);
   }
-
-  oss << ",";
-
-  // NOx
-  if (utils::isValidNOx(mc.nox)) {
-    oss << std::round(mc.nox);
+  if (va) {
+    return static_cast<int>(a + 0.5f);
   }
-
-  oss << ",";
-
-  /// PM 0.3 particle count
-  if (utils::isValidPm03Count(mc.pm_03_pc[0]) && utils::isValidPm03Count(mc.pm_03_pc[1])) {
-    oss << std::round((mc.pm_03_pc[0] + mc.pm_03_pc[1]) / 2.0f);
-  } else if (utils::isValidPm03Count(mc.pm_03_pc[0])) {
-    oss << std::round(mc.pm_03_pc[0]);
-  } else if (utils::isValidPm03Count(mc.pm_03_pc[1])) {
-    oss << std::round(mc.pm_03_pc[1]);
+  if (vb) {
+    return static_cast<int>(b + 0.5f);
   }
-
-  oss << ",";
-
-  if (mc.signal < 0) {
-    oss << mc.signal;
-  }
-
-  if (extendedPmMeasures) {
-    oss << ",,,,,,,,"; // Add placeholder for MAX payload (BMS & O3/NO2)
-
-    /// PM 0.5 particle count
-    if (utils::isValidPm03Count(mc.pm_05_pc[0]) && utils::isValidPm03Count(mc.pm_05_pc[1])) {
-      oss << std::round((mc.pm_05_pc[0] + mc.pm_05_pc[1]) / 2.0f);
-    } else if (utils::isValidPm03Count(mc.pm_05_pc[0])) {
-      oss << std::round(mc.pm_05_pc[0]);
-    } else if (utils::isValidPm03Count(mc.pm_05_pc[1])) {
-      oss << std::round(mc.pm_05_pc[1]);
-    }
-
-    oss << ",";
-
-    /// PM 1.0 particle count
-    if (utils::isValidPm03Count(mc.pm_01_pc[0]) && utils::isValidPm03Count(mc.pm_01_pc[1])) {
-      oss << std::round((mc.pm_01_pc[0] + mc.pm_01_pc[1]) / 2.0f);
-    } else if (utils::isValidPm03Count(mc.pm_01_pc[0])) {
-      oss << std::round(mc.pm_01_pc[0]);
-    } else if (utils::isValidPm03Count(mc.pm_01_pc[1])) {
-      oss << std::round(mc.pm_01_pc[1]);
-    }
-
-    oss << ",";
-
-    /// PM 2.5 particle count
-    if (utils::isValidPm03Count(mc.pm_25_pc[0]) && utils::isValidPm03Count(mc.pm_25_pc[1])) {
-      oss << std::round((mc.pm_25_pc[0] + mc.pm_25_pc[1]) / 2.0f);
-    } else if (utils::isValidPm03Count(mc.pm_25_pc[0])) {
-      oss << std::round(mc.pm_25_pc[0]);
-    } else if (utils::isValidPm03Count(mc.pm_25_pc[1])) {
-      oss << std::round(mc.pm_25_pc[1]);
-    }
-
-    oss << ",";
-
-    /// PM 5.0 particle count
-    if (utils::isValidPm03Count(mc.pm_5_pc[0]) && utils::isValidPm03Count(mc.pm_5_pc[1])) {
-      oss << std::round((mc.pm_5_pc[0] + mc.pm_5_pc[1]) / 2.0f);
-    } else if (utils::isValidPm03Count(mc.pm_5_pc[0])) {
-      oss << std::round(mc.pm_5_pc[0]);
-    } else if (utils::isValidPm03Count(mc.pm_5_pc[1])) {
-      oss << std::round(mc.pm_5_pc[1]);
-    }
-
-    oss << ",";
-
-    /// PM 10 particle count
-    if (utils::isValidPm03Count(mc.pm_10_pc[0]) && utils::isValidPm03Count(mc.pm_10_pc[1])) {
-      oss << std::round((mc.pm_10_pc[0] + mc.pm_10_pc[1]) / 2.0f);
-    } else if (utils::isValidPm03Count(mc.pm_10_pc[0])) {
-      oss << std::round(mc.pm_10_pc[0]);
-    } else if (utils::isValidPm03Count(mc.pm_10_pc[1])) {
-      oss << std::round(mc.pm_10_pc[1]);
-    }
-
-    oss << ",";
-
-    /// PM2.5 standard particle
-    if (utils::isValidPm(mc.pm_25_sp[0]) && utils::isValidPm(mc.pm_25_sp[1])) {
-      float pm10 = (mc.pm_25_sp[0] + mc.pm_25_sp[1]) / 2.0f;
-      oss << std::round(pm10 * 10);
-    } else if (utils::isValidPm(mc.pm_25_sp[0])) {
-      oss << std::round(mc.pm_25_sp[0] * 10);
-    } else if (utils::isValidPm(mc.pm_25_sp[1])) {
-      oss << std::round(mc.pm_25_sp[1] * 10);
-    }
-  }
-
-  return oss.str();
+  return utils::getInvalidPmValue();
 }
 
 String Measurements::toString(bool localServer, AgFirmwareMode fwMode, int rssi) {

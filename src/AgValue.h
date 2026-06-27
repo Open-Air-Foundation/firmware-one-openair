@@ -189,7 +189,15 @@ public:
 
   Measures getMeasures();
 
-  std::string buildMeasuresPayload(Measures &mc, bool extendedPmMeasures);
+  /**
+   * @brief Average two channels that respect per-value validity
+   *
+   * Returns the average when both channels are valid, the single valid channel
+   * when only one is valid, or the provided invalid sentinel when neither is.
+   */
+  static float avgTempHum(float a, float b, bool (*isValid)(float), float invalid);
+  static float avgPm(float a, float b);
+  static int avgCount(float a, float b);
 
   /**
    * Set to true if want to debug every update value

@@ -130,7 +130,7 @@ static int lastCellSignalQuality = 99; // CSQ
 uint32_t agCeClientProblemDetectedTime = 0;
 
 SemaphoreHandle_t mutexMeasurementCycleQueue;
-static std::vector<Measurements::Measures> measurementCycleQueue;
+static std::vector<AirgradientClient::CommonPayload> measurementCycleQueue;
 
 static void boardInit(void);
 static void initializeNetwork();
@@ -162,6 +162,7 @@ static void restartIfCeClientIssueOverTwoHours();
 static void networkSignalCheck();
 static void networkingTask(void *args);
 static AirgradientClient::PayloadType getClientPayloadType();
+static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
 
@@ -1024,6 +1025,57 @@ static AirgradientClient::PayloadType getClientPayloadType() {
   return AirgradientClient::ONE_OPENAIR;
 }
 
+// Map averaged sensor measures into the client CommonPayload struct. Values are
+// stored raw (the client encoder applies scaling); invalid readings use the
+// utils invalid sentinels, which the client IS_*_VALID macros treat as invalid.
+static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc) {
+  AirgradientClient::CommonPayload c;
+
+  // CO2, Temperature, Humidity
+  c.rco2 = utils::isValidCO2(mc.co2) ? static_cast<int>(mc.co2 + 0.5f) : utils::getInvalidCO2();
+  c.atmp = Measurements::avgTempHum(mc.temperature[0], mc.temperature[1],
+                                    &utils::isValidTemperature, utils::getInvalidTemperature());
+  c.rhum = Measurements::avgTempHum(mc.humidity[0], mc.humidity[1], &utils::isValidHumidity,
+                                    utils::getInvalidHumidity());
+
+  // PM mass (atmospheric environment); pm25 kept per-channel
+  c.pm01 = Measurements::avgPm(mc.pm_01[0], mc.pm_01[1]);
+  c.pm25[0] = utils::isValidPm(mc.pm_25[0]) ? mc.pm_25[0]
+                                            : static_cast<float>(utils::getInvalidPmValue());
+  c.pm25[1] = utils::isValidPm(mc.pm_25[1]) ? mc.pm_25[1]
+                                            : static_cast<float>(utils::getInvalidPmValue());
+  c.pm10 = Measurements::avgPm(mc.pm_10[0], mc.pm_10[1]);
+
+  // PM2.5 standard particle (per-channel)
+  c.pm25Sp[0] = utils::isValidPm(mc.pm_25_sp[0]) ? mc.pm_25_sp[0]
+                                                 : static_cast<float>(utils::getInvalidPmValue());
+  c.pm25Sp[1] = utils::isValidPm(mc.pm_25_sp[1]) ? mc.pm_25_sp[1]
+                                                 : static_cast<float>(utils::getInvalidPmValue());
+
+  // Particle counts; 0.3 count kept per-channel, the rest averaged
+  c.particleCount003[0] = utils::isValidPm03Count(mc.pm_03_pc[0])
+                              ? static_cast<int>(mc.pm_03_pc[0] + 0.5f)
+                              : utils::getInvalidPmValue();
+  c.particleCount003[1] = utils::isValidPm03Count(mc.pm_03_pc[1])
+                              ? static_cast<int>(mc.pm_03_pc[1] + 0.5f)
+                              : utils::getInvalidPmValue();
+  c.particleCount005 = Measurements::avgCount(mc.pm_05_pc[0], mc.pm_05_pc[1]);
+  c.particleCount01 = Measurements::avgCount(mc.pm_01_pc[0], mc.pm_01_pc[1]);
+  c.particleCount02 = Measurements::avgCount(mc.pm_25_pc[0], mc.pm_25_pc[1]);
+  c.particleCount50 = Measurements::avgCount(mc.pm_5_pc[0], mc.pm_5_pc[1]);
+  c.particleCount10 = Measurements::avgCount(mc.pm_10_pc[0], mc.pm_10_pc[1]);
+
+  // TVOC / NOx (index and raw)
+  c.tvoc = utils::isValidVOC(mc.tvoc) ? static_cast<int>(mc.tvoc + 0.5f) : utils::getInvalidVOC();
+  c.tvocRaw =
+      utils::isValidVOC(mc.tvoc_raw) ? static_cast<int>(mc.tvoc_raw + 0.5f) : utils::getInvalidVOC();
+  c.nox = utils::isValidNOx(mc.nox) ? static_cast<int>(mc.nox + 0.5f) : utils::getInvalidNOx();
+  c.noxRaw =
+      utils::isValidNOx(mc.nox_raw) ? static_cast<int>(mc.nox_raw + 0.5f) : utils::getInvalidNOx();
+
+  return c;
+}
+
 static void restoreOperatorState() {
   String ops = configuration.getCellOperators();
   if (ops.length() == 0) {
@@ -1141,7 +1193,12 @@ void initializeNetwork() {
     return;
   }
 
-  std::string config = agClient->httpFetchConfig();
+  std::string config;
+  if (networkOption == UseCellular) {
+    config = agClient->coapFetchConfig();
+  } else {
+    config = agClient->httpFetchConfig();
+  }
   configSchedule.update();
   // Check if fetch configuration failed or fetch succes but parsing failed
   if (agClient->isLastFetchConfigSucceed() == false ||
@@ -1171,7 +1228,12 @@ static void configurationUpdateSchedule(void) {
     return;
   }
 
-  std::string config = agClient->httpFetchConfig();
+  std::string config;
+  if (networkOption == UseCellular) {
+    config = agClient->coapFetchConfig();
+  } else {
+    config = agClient->httpFetchConfig();
+  }
   if (agClient->isLastFetchConfigSucceed()) {
     configuration.parse(config.c_str(), false);
   }
@@ -1539,20 +1601,20 @@ void postUsingCellular(bool forcePost) {
   }
 
   // Build payload include all measurements from queue
-  std::string payload;
-  bool extendPmMeasures = configuration.isExtendedPmMeasuresEnabled();
-  payload += std::to_string(CELLULAR_MEASUREMENT_INTERVAL / 1000); // Convert to seconds
+  AirgradientClient::AirgradientPayload payload = {};
+  payload.measureInterval = CELLULAR_MEASUREMENT_INTERVAL / 1000; // Convert to seconds
+  payload.payloadType = getClientPayloadType();
+  payload.signal = cellularCard->csqToDbm(lastCellSignalQuality); // latest signal as RSSI
+  payload.bufferCount = queueSize;
   for (int i = 0; i < queueSize; i++) {
-    auto mc = measurementCycleQueue.at(i);
-    payload += ",";
-    payload += measurements.buildMeasuresPayload(mc, extendPmMeasures);
+    payload.payloadBuffer[i].common = measurementCycleQueue.at(i);
   }
 
   // Release before actually post measures that might takes too long
   xSemaphoreGive(mutexMeasurementCycleQueue);
 
-  // Attempt to send
-  if (agClient->httpPostMeasures(payload) == false) {
+  // Attempt to send over CoAP
+  if (agClient->coapPostMeasures(payload) == false) {
     // Consider network has a problem, retry in next schedule
     Serial.println("Post measures failed, retry in next schedule");
     return;
@@ -1563,7 +1625,7 @@ void postUsingCellular(bool forcePost) {
 
   if (measurementCycleQueue.capacity() > RESERVED_MEASUREMENT_CYCLE_CAPACITY) {
     Serial.println("measurementCycleQueue capacity more than reserved space, resizing..");
-    std::vector<Measurements::Measures> tmp;
+    std::vector<AirgradientClient::CommonPayload> tmp;
     tmp.reserve(RESERVED_MEASUREMENT_CYCLE_CAPACITY);
     measurementCycleQueue.swap(tmp);
   } else {
@@ -1807,11 +1869,9 @@ void newMeasurementCycle() {
       measurementCycleQueue.erase(measurementCycleQueue.begin());
     }
 
-    // Get current measures
+    // Get current measures and cache as client payload buffer
     auto mc = measurements.getMeasures();
-    mc.signal = cellularCard->csqToDbm(lastCellSignalQuality); // convert to RSSI
-
-    measurementCycleQueue.push_back(mc);
+    measurementCycleQueue.push_back(buildCommonPayload(mc));
     Serial.println("New measurement cycle added to queue");
     // Release mutex
     xSemaphoreGive(mutexMeasurementCycleQueue);
