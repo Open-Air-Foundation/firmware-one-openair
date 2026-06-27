@@ -85,7 +85,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 
 #define MEASUREMENT_TRANSMIT_CYCLE 3
 #define MAXIMUM_MEASUREMENT_CYCLE_QUEUE 80
-#define RESERVED_MEASUREMENT_CYCLE_CAPACITY 10
+#define MEASUREMENT_LOCK_TIMEOUT (3 * 60000) /** ms — cap loop() stall when a post holds the queue lock */
 
 /** I2C define */
 #define I2C_SDA_PIN 7
@@ -130,7 +130,7 @@ static int lastCellSignalQuality = 99; // CSQ
 uint32_t agCeClientProblemDetectedTime = 0;
 
 SemaphoreHandle_t mutexMeasurementCycleQueue;
-static std::vector<AirgradientClient::CommonPayload> measurementCycleQueue;
+static AirgradientClient::AirgradientPayload measurementPayload;
 
 static void boardInit(void);
 static void initializeNetwork();
@@ -284,9 +284,7 @@ void setup() {
     measurementSchedule.setPeriod(CELLULAR_MEASUREMENT_INTERVAL);
     measurementSchedule.update();
     // Queue now only applied for cellular
-    // Allocate queue memory to avoid always reallocation
-    measurementCycleQueue.reserve(RESERVED_MEASUREMENT_CYCLE_CAPACITY);
-    // Initialize mutex to access mesurementCycleQueue
+    // Initialize mutex to access measurementPayload
     mutexMeasurementCycleQueue = xSemaphoreCreateMutex();
   }
 
@@ -1581,11 +1579,13 @@ void postUsingWifi() {
  * forcePost to force post without checking transmit cycle
  */
 void postUsingCellular(bool forcePost) {
-  // Aquire queue mutex to get queue size
+  // Aquire queue mutex; held across the post so newMeasurementCycle cannot
+  // mutate the payload mid-encode. newMeasurementCycle uses a bounded take so
+  // loop() never stalls past the external watchdog.
   xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY);
 
   // Make sure measurement cycle available
-  int queueSize = measurementCycleQueue.size();
+  int queueSize = measurementPayload.bufferCount;
   if (queueSize == 0) {
     Serial.println("Skipping transmission, measurementCycle empty");
     xSemaphoreGive(mutexMeasurementCycleQueue);
@@ -1600,39 +1600,21 @@ void postUsingCellular(bool forcePost) {
     return;
   }
 
-  // Build payload include all measurements from queue
-  AirgradientClient::AirgradientPayload payload = {};
-  payload.measureInterval = CELLULAR_MEASUREMENT_INTERVAL / 1000; // Convert to seconds
-  payload.payloadType = getClientPayloadType();
-  payload.signal = cellularCard->csqToDbm(lastCellSignalQuality); // latest signal as RSSI
-  payload.bufferCount = queueSize;
-  for (int i = 0; i < queueSize; i++) {
-    payload.payloadBuffer[i].common = measurementCycleQueue.at(i);
-  }
-
-  // Release before actually post measures that might takes too long
-  xSemaphoreGive(mutexMeasurementCycleQueue);
+  // Buffers and bufferCount already populated by newMeasurementCycle; set header
+  measurementPayload.measureInterval = CELLULAR_MEASUREMENT_INTERVAL / 1000; // Convert to seconds
+  measurementPayload.payloadType = getClientPayloadType();
+  measurementPayload.signal = cellularCard->csqToDbm(lastCellSignalQuality); // latest signal as RSSI
 
   // Attempt to send over CoAP
-  if (agClient->coapPostMeasures(payload) == false) {
-    // Consider network has a problem, retry in next schedule
+  if (agClient->coapPostMeasures(measurementPayload) == false) {
+    // Consider network has a problem, retry in next schedule (data retained)
     Serial.println("Post measures failed, retry in next schedule");
+    xSemaphoreGive(mutexMeasurementCycleQueue);
     return;
   }
 
-  // Post success, remove the data that previously sent from queue
-  xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY);
-
-  if (measurementCycleQueue.capacity() > RESERVED_MEASUREMENT_CYCLE_CAPACITY) {
-    Serial.println("measurementCycleQueue capacity more than reserved space, resizing..");
-    std::vector<AirgradientClient::CommonPayload> tmp;
-    tmp.reserve(RESERVED_MEASUREMENT_CYCLE_CAPACITY);
-    measurementCycleQueue.swap(tmp);
-  } else {
-    // If not more than the capacity, then just clear all the values
-    measurementCycleQueue.clear();
-  }
-
+  // Post success, clear the cache
+  measurementPayload.bufferCount = 0;
   xSemaphoreGive(mutexMeasurementCycleQueue);
 }
 
@@ -1862,20 +1844,27 @@ void networkingTask(void *args) {
 }
 
 void newMeasurementCycle() {
-  if (xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY) == pdTRUE) {
-    // Make sure queue not overflow
-    if (measurementCycleQueue.size() >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE) {
-      // Remove the oldest data from queue if queue reach max
-      measurementCycleQueue.erase(measurementCycleQueue.begin());
-    }
-
-    // Get current measures and cache as client payload buffer
-    auto mc = measurements.getMeasures();
-    measurementCycleQueue.push_back(buildCommonPayload(mc));
-    Serial.println("New measurement cycle added to queue");
-    // Release mutex
-    xSemaphoreGive(mutexMeasurementCycleQueue);
-    // Log current free heap size
-    Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
+  // Bounded wait: if a post holds the lock, wait up to MEASUREMENT_LOCK_TIMEOUT.
+  // Caps loop() stall under the external watchdog; on timeout, skip this cycle.
+  if (xSemaphoreTake(mutexMeasurementCycleQueue, pdMS_TO_TICKS(MEASUREMENT_LOCK_TIMEOUT)) != pdTRUE) {
+    Serial.println("Skip measurement cycle, transmission holding the lock");
+    return;
   }
+
+  // Make sure buffer not overflow; drop the oldest entry if at capacity
+  if (measurementPayload.bufferCount >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE) {
+    memmove(&measurementPayload.payloadBuffer[0], &measurementPayload.payloadBuffer[1],
+            (MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1) * sizeof(AirgradientClient::PayloadBuffer));
+    measurementPayload.bufferCount = MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1;
+  }
+
+  // Get current measures and cache as client payload buffer
+  auto mc = measurements.getMeasures();
+  measurementPayload.payloadBuffer[measurementPayload.bufferCount].common = buildCommonPayload(mc);
+  measurementPayload.bufferCount++;
+  Serial.println("New measurement cycle added to queue");
+
+  xSemaphoreGive(mutexMeasurementCycleQueue);
+  // Log current free heap size
+  Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
 }
