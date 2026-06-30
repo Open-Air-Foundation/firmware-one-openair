@@ -85,7 +85,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 
 #define MEASUREMENT_TRANSMIT_CYCLE 3
 #define MAXIMUM_MEASUREMENT_CYCLE_QUEUE 80
-#define RESERVED_MEASUREMENT_CYCLE_CAPACITY 10
+#define MEASUREMENT_LOCK_TIMEOUT (3 * 60000) /** ms — cap loop() stall when a post holds the queue lock */
 
 /** I2C define */
 #define I2C_SDA_PIN 7
@@ -130,7 +130,7 @@ static int lastCellSignalQuality = 99; // CSQ
 uint32_t agCeClientProblemDetectedTime = 0;
 
 SemaphoreHandle_t mutexMeasurementCycleQueue;
-static std::vector<Measurements::Measures> measurementCycleQueue;
+static AirgradientClient::AirgradientPayload measurementPayload;
 
 static void boardInit(void);
 static void initializeNetwork();
@@ -162,6 +162,7 @@ static void restartIfCeClientIssueOverTwoHours();
 static void networkSignalCheck();
 static void networkingTask(void *args);
 static AirgradientClient::PayloadType getClientPayloadType();
+static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
 
@@ -283,9 +284,7 @@ void setup() {
     measurementSchedule.setPeriod(CELLULAR_MEASUREMENT_INTERVAL);
     measurementSchedule.update();
     // Queue now only applied for cellular
-    // Allocate queue memory to avoid always reallocation
-    measurementCycleQueue.reserve(RESERVED_MEASUREMENT_CYCLE_CAPACITY);
-    // Initialize mutex to access mesurementCycleQueue
+    // Initialize mutex to access measurementPayload
     mutexMeasurementCycleQueue = xSemaphoreCreateMutex();
   }
 
@@ -1024,6 +1023,57 @@ static AirgradientClient::PayloadType getClientPayloadType() {
   return AirgradientClient::ONE_OPENAIR;
 }
 
+// Map averaged sensor measures into the client CommonPayload struct. Values are
+// stored raw (the client encoder applies scaling); invalid readings use the
+// utils invalid sentinels, which the client IS_*_VALID macros treat as invalid.
+static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc) {
+  AirgradientClient::CommonPayload c;
+
+  // CO2, Temperature, Humidity
+  c.rco2 = utils::isValidCO2(mc.co2) ? static_cast<int>(mc.co2 + 0.5f) : utils::getInvalidCO2();
+  c.atmp = Measurements::avgTempHum(mc.temperature[0], mc.temperature[1],
+                                    &utils::isValidTemperature, utils::getInvalidTemperature());
+  c.rhum = Measurements::avgTempHum(mc.humidity[0], mc.humidity[1], &utils::isValidHumidity,
+                                    utils::getInvalidHumidity());
+
+  // PM mass (atmospheric environment); pm25 kept per-channel
+  c.pm01 = Measurements::avgPm(mc.pm_01[0], mc.pm_01[1]);
+  c.pm25[0] = utils::isValidPm(mc.pm_25[0]) ? mc.pm_25[0]
+                                            : static_cast<float>(utils::getInvalidPmValue());
+  c.pm25[1] = utils::isValidPm(mc.pm_25[1]) ? mc.pm_25[1]
+                                            : static_cast<float>(utils::getInvalidPmValue());
+  c.pm10 = Measurements::avgPm(mc.pm_10[0], mc.pm_10[1]);
+
+  // PM2.5 standard particle (per-channel)
+  c.pm25Sp[0] = utils::isValidPm(mc.pm_25_sp[0]) ? mc.pm_25_sp[0]
+                                                 : static_cast<float>(utils::getInvalidPmValue());
+  c.pm25Sp[1] = utils::isValidPm(mc.pm_25_sp[1]) ? mc.pm_25_sp[1]
+                                                 : static_cast<float>(utils::getInvalidPmValue());
+
+  // Particle counts; 0.3 count kept per-channel, the rest averaged
+  c.particleCount003[0] = utils::isValidPm03Count(mc.pm_03_pc[0])
+                              ? static_cast<int>(mc.pm_03_pc[0] + 0.5f)
+                              : utils::getInvalidPmValue();
+  c.particleCount003[1] = utils::isValidPm03Count(mc.pm_03_pc[1])
+                              ? static_cast<int>(mc.pm_03_pc[1] + 0.5f)
+                              : utils::getInvalidPmValue();
+  c.particleCount005 = Measurements::avgCount(mc.pm_05_pc[0], mc.pm_05_pc[1]);
+  c.particleCount01 = Measurements::avgCount(mc.pm_01_pc[0], mc.pm_01_pc[1]);
+  c.particleCount02 = Measurements::avgCount(mc.pm_25_pc[0], mc.pm_25_pc[1]);
+  c.particleCount50 = Measurements::avgCount(mc.pm_5_pc[0], mc.pm_5_pc[1]);
+  c.particleCount10 = Measurements::avgCount(mc.pm_10_pc[0], mc.pm_10_pc[1]);
+
+  // TVOC / NOx (index and raw)
+  c.tvoc = utils::isValidVOC(mc.tvoc) ? static_cast<int>(mc.tvoc + 0.5f) : utils::getInvalidVOC();
+  c.tvocRaw =
+      utils::isValidVOC(mc.tvoc_raw) ? static_cast<int>(mc.tvoc_raw + 0.5f) : utils::getInvalidVOC();
+  c.nox = utils::isValidNOx(mc.nox) ? static_cast<int>(mc.nox + 0.5f) : utils::getInvalidNOx();
+  c.noxRaw =
+      utils::isValidNOx(mc.nox_raw) ? static_cast<int>(mc.nox_raw + 0.5f) : utils::getInvalidNOx();
+
+  return c;
+}
+
 static void restoreOperatorState() {
   String ops = configuration.getCellOperators();
   if (ops.length() == 0) {
@@ -1141,7 +1191,12 @@ void initializeNetwork() {
     return;
   }
 
-  std::string config = agClient->httpFetchConfig();
+  std::string config;
+  if (networkOption == UseCellular) {
+    config = agClient->coapFetchConfig();
+  } else {
+    config = agClient->httpFetchConfig();
+  }
   configSchedule.update();
   // Check if fetch configuration failed or fetch succes but parsing failed
   if (agClient->isLastFetchConfigSucceed() == false ||
@@ -1171,7 +1226,12 @@ static void configurationUpdateSchedule(void) {
     return;
   }
 
-  std::string config = agClient->httpFetchConfig();
+  std::string config;
+  if (networkOption == UseCellular) {
+    config = agClient->coapFetchConfig();
+  } else {
+    config = agClient->httpFetchConfig();
+  }
   if (agClient->isLastFetchConfigSucceed()) {
     configuration.parse(config.c_str(), false);
   }
@@ -1519,11 +1579,13 @@ void postUsingWifi() {
  * forcePost to force post without checking transmit cycle
  */
 void postUsingCellular(bool forcePost) {
-  // Aquire queue mutex to get queue size
+  // Aquire queue mutex; held across the post so newMeasurementCycle cannot
+  // mutate the payload mid-encode. newMeasurementCycle uses a bounded take so
+  // loop() never stalls past the external watchdog.
   xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY);
 
   // Make sure measurement cycle available
-  int queueSize = measurementCycleQueue.size();
+  int queueSize = measurementPayload.bufferCount;
   if (queueSize == 0) {
     Serial.println("Skipping transmission, measurementCycle empty");
     xSemaphoreGive(mutexMeasurementCycleQueue);
@@ -1538,39 +1600,21 @@ void postUsingCellular(bool forcePost) {
     return;
   }
 
-  // Build payload include all measurements from queue
-  std::string payload;
-  bool extendPmMeasures = configuration.isExtendedPmMeasuresEnabled();
-  payload += std::to_string(CELLULAR_MEASUREMENT_INTERVAL / 1000); // Convert to seconds
-  for (int i = 0; i < queueSize; i++) {
-    auto mc = measurementCycleQueue.at(i);
-    payload += ",";
-    payload += measurements.buildMeasuresPayload(mc, extendPmMeasures);
-  }
+  // Buffers and bufferCount already populated by newMeasurementCycle; set header
+  measurementPayload.measureInterval = CELLULAR_MEASUREMENT_INTERVAL / 1000; // Convert to seconds
+  measurementPayload.payloadType = getClientPayloadType();
+  measurementPayload.signal = cellularCard->csqToDbm(lastCellSignalQuality); // latest signal as RSSI
 
-  // Release before actually post measures that might takes too long
-  xSemaphoreGive(mutexMeasurementCycleQueue);
-
-  // Attempt to send
-  if (agClient->httpPostMeasures(payload) == false) {
-    // Consider network has a problem, retry in next schedule
+  // Attempt to send over CoAP
+  if (agClient->coapPostMeasures(measurementPayload) == false) {
+    // Consider network has a problem, retry in next schedule (data retained)
     Serial.println("Post measures failed, retry in next schedule");
+    xSemaphoreGive(mutexMeasurementCycleQueue);
     return;
   }
 
-  // Post success, remove the data that previously sent from queue
-  xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY);
-
-  if (measurementCycleQueue.capacity() > RESERVED_MEASUREMENT_CYCLE_CAPACITY) {
-    Serial.println("measurementCycleQueue capacity more than reserved space, resizing..");
-    std::vector<Measurements::Measures> tmp;
-    tmp.reserve(RESERVED_MEASUREMENT_CYCLE_CAPACITY);
-    measurementCycleQueue.swap(tmp);
-  } else {
-    // If not more than the capacity, then just clear all the values
-    measurementCycleQueue.clear();
-  }
-
+  // Post success, clear the cache
+  measurementPayload.bufferCount = 0;
   xSemaphoreGive(mutexMeasurementCycleQueue);
 }
 
@@ -1800,22 +1844,27 @@ void networkingTask(void *args) {
 }
 
 void newMeasurementCycle() {
-  if (xSemaphoreTake(mutexMeasurementCycleQueue, portMAX_DELAY) == pdTRUE) {
-    // Make sure queue not overflow
-    if (measurementCycleQueue.size() >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE) {
-      // Remove the oldest data from queue if queue reach max
-      measurementCycleQueue.erase(measurementCycleQueue.begin());
-    }
-
-    // Get current measures
-    auto mc = measurements.getMeasures();
-    mc.signal = cellularCard->csqToDbm(lastCellSignalQuality); // convert to RSSI
-
-    measurementCycleQueue.push_back(mc);
-    Serial.println("New measurement cycle added to queue");
-    // Release mutex
-    xSemaphoreGive(mutexMeasurementCycleQueue);
-    // Log current free heap size
-    Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
+  // Bounded wait: if a post holds the lock, wait up to MEASUREMENT_LOCK_TIMEOUT.
+  // Caps loop() stall under the external watchdog; on timeout, skip this cycle.
+  if (xSemaphoreTake(mutexMeasurementCycleQueue, pdMS_TO_TICKS(MEASUREMENT_LOCK_TIMEOUT)) != pdTRUE) {
+    Serial.println("Skip measurement cycle, transmission holding the lock");
+    return;
   }
+
+  // Make sure buffer not overflow; drop the oldest entry if at capacity
+  if (measurementPayload.bufferCount >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE) {
+    memmove(&measurementPayload.payloadBuffer[0], &measurementPayload.payloadBuffer[1],
+            (MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1) * sizeof(AirgradientClient::PayloadBuffer));
+    measurementPayload.bufferCount = MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1;
+  }
+
+  // Get current measures and cache as client payload buffer
+  auto mc = measurements.getMeasures();
+  measurementPayload.payloadBuffer[measurementPayload.bufferCount].common = buildCommonPayload(mc);
+  measurementPayload.bufferCount++;
+  Serial.println("New measurement cycle added to queue");
+
+  xSemaphoreGive(mutexMeasurementCycleQueue);
+  // Log current free heap size
+  Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
 }
