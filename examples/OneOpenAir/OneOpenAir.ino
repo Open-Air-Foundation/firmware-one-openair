@@ -690,7 +690,6 @@ static void displayExecuteOta(AirgradientOTA::OtaResult result, String msg, int 
     }
 
     if (ag->isOne()) {
-      oledDisplay.setAirGradient(0);
       oledDisplay.setBrightness(0);
     }
     break;
