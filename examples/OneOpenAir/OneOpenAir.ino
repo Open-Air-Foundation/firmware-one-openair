@@ -1592,9 +1592,11 @@ void postUsingCellular(bool forcePost) {
     return;
   }
 
-  // Check queue size if its ready to transmit
-  // It is ready if size is divisible by 3
-  if (!forcePost && (queueSize % MEASUREMENT_TRANSMIT_CYCLE) > 0) {
+  // Ready when size is divisible by 3, or the buffer is full. The full-buffer
+  // override breaks a deadlock: the cap pins size at a non-multiple of 3, which
+  // the divisibility gate alone would never release.
+  bool queueFull = queueSize >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE;
+  if (!forcePost && !queueFull && (queueSize % MEASUREMENT_TRANSMIT_CYCLE) > 0) {
     Serial.printf("Not ready to transmit, queue size are %d\n", queueSize);
     xSemaphoreGive(mutexMeasurementCycleQueue);
     return;
