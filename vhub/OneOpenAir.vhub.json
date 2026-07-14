@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "7c00651-wip",
+  "rev": "1531b84",
   "product": {
     "slug": "one-open-air",
     "name": "ONE Indoor & Open Air",
@@ -646,8 +646,8 @@
       "sub_category": "Recovery",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "When client becomes not-ready, retry every 30s with module reset",
-      "expected_result": "Network task logs \"Cellular client not ready, ensuring connection...\". For the first hour after detection, each attempt calls ensureClientConnection(true) which resets the module (cell_->reset() or power cycle as fallback), waits 10 seconds, reinitializes, then retries LTE registration. On failure: log \"Cellular client connection not ready, retry in 30s...\" and waits 30 s before the next attempt.",
-      "notes": "Requires: serial log + induced fault (pull SIM after registration). AT debug is re-enabled while the client is not-ready."
+      "expected_result": "Network task logs \"Cellular client not ready, ensuring connection...\". For the first hour after detection, each attempt calls ensureClientConnection(true) which resets the module (cell_->reset() or power cycle as fallback), waits 10 seconds, reinitializes, then retries LTE registration. On CoAP request or UDP disconnect failure, the cellular client is marked not-ready; the next retry opens a fresh UDP/CoAP connection instead of logging \"CoAP already connected\". On failure: log \"Cellular client connection not ready, retry in 30s...\" and waits 30 s before the next attempt.",
+      "notes": "Requires: serial log + induced fault (pull SIM after registration, or block CoAP responses). AT debug is re-enabled while the client is not-ready."
     },
     {
       "id": "cellular.recovery.power-cycle-after-1h",
@@ -880,8 +880,8 @@
       "sub_category": "Cellular transmission",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "During a cellular outage, measurement cycles are cached and all are posted once connectivity recovers",
-      "expected_result": "While the cellular link is down, measurement cycles keep being captured every 3 minutes (\"New measurement cycle added to queue\") and accumulate in the cache (up to 80 cycles; the oldest is dropped once full). No successful post occurs during the outage. When connectivity is restored, the next transmission sends the entire cached batch in a single CoAP transfer (block-wise if larger than one packet) and the cache is cleared.",
-      "notes": "Requires: serial log + cellular. Reproduce by removing coverage for a few hours (e.g. pull the antenna / SIM after registration), let cycles accumulate, then restore coverage and confirm a single flush of all buffered cycles followed by an empty cache."
+      "expected_result": "While the cellular link is down, measurement cycles keep being captured every 3 minutes (\"New measurement cycle added to queue\") and accumulate in the cache (up to 80 cycles; the oldest is dropped once full). No successful post occurs during the outage. When connectivity is restored, the next transmission sends the entire cached batch in a single CoAP transfer (block-wise if larger than one packet) and the cache is cleared. If the cache reaches the 80-cycle capacity, that full queue is considered ready to transmit and must not stay at \"Not ready to transmit, queue size are 80\".",
+      "notes": "Requires: serial log + cellular. Reproduce by removing coverage for a few hours (e.g. pull the antenna / SIM after registration), let cycles accumulate, then restore coverage and confirm a single flush of all buffered cycles followed by an empty cache. Reaching 80 cycles requires roughly 4 hours at the 3-minute measurement interval."
     },
     {
       "id": "server-comm.dashboard-values-match",
@@ -929,6 +929,15 @@
       "notes": "Requires: serial log + disableCloudConnection=true. The skip happens at the networking-task loop level, not inside the OTA function itself during normal runtime."
     },
     {
+      "id": "ota.transport.wifi-https",
+      "category": "OTA Update",
+      "sub_category": "Transport",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "On WiFi, OTA firmware checks use HTTPS",
+      "expected_result": "During a WiFi OTA check, serial log prints a firmware URL beginning with \"https://\" and targeting /sensors/.../firmware.bin?current_firmware=.... The check completes with a normal OTA result (AlreadyUpToDate, Skipped, Failed, or update flow) using TLS.",
+      "notes": "Requires: serial log + WiFi network. Cellular OTA still uses the cellular module HTTP download path with offset/length/iccid query parameters."
+    },
+    {
       "id": "ota.result.up-to-date",
       "category": "OTA Update",
       "sub_category": "Result",
@@ -943,7 +952,7 @@
       "sub_category": "Result",
       "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
       "description": "When an update is available, the device downloads it and reboots on success",
-      "expected_result": "Starting: ONE_INDOOR shows \"Firmware Update\" / \"New version\" / current fwNewVersion value (current code leaves this value empty unless populated elsewhere). Open Air logs \"New firmware: <value>\". InProgress: ONE_INDOOR shows \"Updating... N%\"; Open Air logs \"Firmware update: N%\". Success: code logs \"OTA update performed, restarting ...\", then counts down \"Rebooting... 2\", \"1\", \"0\" (1 s each), and calls esp_restart().",
+      "expected_result": "Starting: ONE_INDOOR shows \"Firmware Update\" / \"New version\" / current fwNewVersion value (current code leaves this value empty unless populated elsewhere). Open Air logs \"New firmware: <value>\". InProgress: ONE_INDOOR shows \"Updating... N%\"; Open Air logs \"Firmware update: N%\". Success: code logs \"OTA update performed, restarting ...\", then counts down \"Rebooting... 2\", \"1\", \"0\" (1 s each). On ONE_INDOOR the OLED is blanked after the countdown; then esp_restart() is called.",
       "notes": "Requires: a newer firmware binary staged on the OTA server for this device. After reboot, verify the new version via boot log or /measures/current firmware field."
     },
     {
