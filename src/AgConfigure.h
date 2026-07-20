@@ -138,7 +138,9 @@ public:
   const String *getSatellites() const;
   String getCellOperators(void);
   uint32_t getCellOperatorId(void);
-  void setCellOperatorState(const String &operators, uint32_t operatorId);
+  uint32_t getCellOperatorFailCount(void);
+  void setCellOperatorState(const String &operators, uint32_t operatorId,
+                            uint32_t failCount = 0);
 
 private:
   ConfigurationUpdatedCallback_t _callback;

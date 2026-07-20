@@ -67,6 +67,7 @@ JSON_PROP_DEF(extendedPmMeasures);
 JSON_PROP_DEF(satellites);
 JSON_PROP_DEF(cellOperators);
 JSON_PROP_DEF(cellOperatorId);
+JSON_PROP_DEF(cellOperatorFailCount);
 
 #define jprop_model_default                           ""
 #define jprop_country_default                         "TH"
@@ -88,6 +89,7 @@ JSON_PROP_DEF(cellOperatorId);
 #define jprop_extendedPmMeasures_default              false
 #define jprop_cellOperators_default                   ""
 #define jprop_cellOperatorId_default                  0
+#define jprop_cellOperatorFailCount_default           0
 
 JSONVar jconfig;
 
@@ -508,6 +510,7 @@ void Configuration::defaultConfig(void) {
   jconfig[jprop_extendedPmMeasures] = jprop_extendedPmMeasures_default;
   jconfig[jprop_cellOperators] = jprop_cellOperators_default;
   jconfig[jprop_cellOperatorId] = jprop_cellOperatorId_default;
+  jconfig[jprop_cellOperatorFailCount] = jprop_cellOperatorFailCount_default;
 
   // PM2.5 default correction
   pmCorrection.algorithm = COR_ALGO_PM_NONE;
@@ -1651,6 +1654,14 @@ void Configuration::toConfig(const char *buf) {
     logInfo("toConfig: cellOperatorId changed");
   }
 
+  // Validate cellOperatorFailCount (number)
+  if (JSON.typeof_(jconfig[jprop_cellOperatorFailCount]) != "number" &&
+      JSON.typeof_(jconfig[jprop_cellOperatorFailCount]) != "undefined") {
+    jconfig[jprop_cellOperatorFailCount] = jprop_cellOperatorFailCount_default;
+    changed = true;
+    logInfo("toConfig: cellOperatorFailCount changed");
+  }
+
   if (changed) {
     saveConfig();
   }
@@ -1814,9 +1825,19 @@ uint32_t Configuration::getCellOperatorId(void) {
   return id;
 }
 
-void Configuration::setCellOperatorState(const String &operators, uint32_t operatorId) {
+uint32_t Configuration::getCellOperatorFailCount(void) {
+  if (JSON.typeof_(jconfig[jprop_cellOperatorFailCount]) != "number") {
+    return 0;
+  }
+  uint32_t failCount = (uint32_t)(int)jconfig[jprop_cellOperatorFailCount];
+  return failCount;
+}
+
+void Configuration::setCellOperatorState(const String &operators, uint32_t operatorId,
+                                         uint32_t failCount) {
   jconfig[jprop_cellOperators] = operators;
   jconfig[jprop_cellOperatorId] = (int)operatorId;
+  jconfig[jprop_cellOperatorFailCount] = (int)failCount;
   saveConfig();
   logInfo("Cellular operator state saved");
 }
