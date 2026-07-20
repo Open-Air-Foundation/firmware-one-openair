@@ -165,6 +165,7 @@ static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
+static void clearSavedOperatorIfExhausted();
 
 AgSchedule dispLedSchedule(DISP_UPDATE_INTERVAL, updateDisplayAndLedBar);
 AgSchedule configSchedule(WIFI_SERVER_CONFIG_SYNC_INTERVAL, configurationUpdateSchedule);
@@ -1094,6 +1095,20 @@ static void saveOperatorState() {
   Serial.printf("Saved operator state: id=%u, list=%s\n", opId, ops.c_str());
 }
 
+static void clearSavedOperatorIfExhausted() {
+  if (networkOption != UseCellular || cellularCard == nullptr) {
+    return;
+  }
+  if (!cellularCard->getSerializedOperators().empty() || cellularCard->getCurrentOperatorId() != 0) {
+    return;
+  }
+  if (configuration.getCellOperators().length() == 0 && configuration.getCellOperatorId() == 0) {
+    return;
+  }
+  configuration.setCellOperatorState("", 0);
+  Serial.println("Cleared saved operator state after registration exhaustion");
+}
+
 void initializeNetwork() {
   // Check if cellular module available
   agSerial = new AgSerial(Wire);
@@ -1131,6 +1146,7 @@ void initializeNetwork() {
   agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
 
   if (!agClient->begin(ag->deviceId().c_str(), getClientPayloadType())) {
+    clearSavedOperatorIfExhausted();
     oledDisplay.setText("Client", "initialization", "failed");
     delay(5000);
     oledDisplay.showRebooting();
