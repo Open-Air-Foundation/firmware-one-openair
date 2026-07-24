@@ -63,6 +63,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #include "Libraries/airgradient-ota/src/airgradientOtaCellular.h"
 #include "esp_system.h"
 #include "freertos/projdefs.h"
+#include "homekit.h"
 
 #define LED_BAR_ANIMATION_PERIOD 100                       /** ms */
 #define DISP_UPDATE_INTERVAL 2500                          /** ms */
@@ -165,6 +166,8 @@ static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
+static void setupHomeKit();
+static void updateHomeKit();
 
 AgSchedule dispLedSchedule(DISP_UPDATE_INTERVAL, updateDisplayAndLedBar);
 AgSchedule configSchedule(WIFI_SERVER_CONFIG_SYNC_INTERVAL, configurationUpdateSchedule);
@@ -178,6 +181,11 @@ AgSchedule watchdogFeedSchedule(60000, wdgFeedUpdate);
 AgSchedule checkForUpdateSchedule(FIRMWARE_CHECK_FOR_UPDATE_MS, checkForFirmwareUpdate);
 AgSchedule networkSignalCheckSchedule(10000, networkSignalCheck);
 AgSchedule printMeasurementsSchedule(6000, printMeasurements);
+AgSchedule homekitSchedule(10000, updateHomeKit);
+
+// HomeKit pairing (SRP) is stack-heavy; enlarge the Arduino loop-task stack so
+// homeSpan.poll() has room to complete pairing without a stack overflow.
+SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 void setup() {
   /** Serial for print debug message */
@@ -317,6 +325,12 @@ void loop() {
   // Schedule to feed external watchdog
   watchdogFeedSchedule.run();
 
+  // Service HomeKit: poll every loop for responsiveness, push values every 10s
+  if (homekitIsReady()) {
+    homekitPoll();
+    homekitSchedule.run();
+  }
+
   if (firmwareUpdateInProgress) {
     // Firmare update currently in progress, temporarily disable running sensor schedules
     delay(10000);
@@ -397,6 +411,38 @@ static void co2Update(void) {
 }
 
 void printMeasurements() { measurements.printCurrentAverage(); }
+
+// Start HomeKit, handing it the already-established WiFi connection. Called once
+// from initializeNetwork(), only in WiFi mode. The HomeSpan implementation lives
+// in homekit.cpp (a separate translation unit) so its global 'PushButton' class
+// does not collide with the AirGradient library's class of the same name.
+static void setupHomeKit() {
+  if (networkOption != UseWifi || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  homekitBegin(ag->getBoardName().c_str(), ag->deviceId().c_str(),
+               ag->getVersion().c_str(), WiFi.SSID().c_str(), WiFi.psk().c_str());
+}
+
+// Read the latest sensor values and forward them to HomeKit. Runs every 10s from
+// loop(). Validity is evaluated here; invalid readings are not forwarded.
+static void updateHomeKit() {
+  if (!homekitIsReady()) {
+    return;
+  }
+
+  int co2 = measurements.get(Measurements::CO2);
+  int tvoc = measurements.get(Measurements::TVOC);
+  int nox = measurements.get(Measurements::NOx);
+  float pm25 = measurements.getCorrectedPM25(false, 1, true);
+  float temp = measurements.getCorrectedTempHum(Measurements::Temperature, 1, true);
+  float hum = measurements.getCorrectedTempHum(Measurements::Humidity, 1, true);
+
+  homekitUpdate(pm25, utils::isValidPm((int)round(pm25)), co2, utils::isValidCO2(co2),
+                tvoc, utils::isValidVOC(tvoc), nox, utils::isValidNOx(nox), temp,
+                utils::isValidTemperature(temp), hum, utils::isValidHumidity(hum));
+}
 
 static void mdnsInit(void) {
   if (!MDNS.begin(localServer.getHostname().c_str())) {
@@ -1172,6 +1218,8 @@ void initializeNetwork() {
     localServer.begin();
     // Apply mqtt connection if configured
     initMqtt();
+    // Expose sensors to Apple HomeKit over the same WiFi connection
+    setupHomeKit();
 
     // Ignore the rest if cloud connection to AirGradient is disabled
     if (configuration.isCloudConnectionDisabled()) {

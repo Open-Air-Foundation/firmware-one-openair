@@ -33,6 +33,7 @@ Using library manager install the latest version (Tools ➝ Manage Libraries... 
   - `Sensirion Core` by Sensirion `^0.7.3`
   - `Sensirion UART SPS30` by Sensirion `^1.0.0`
   - `ArduinoJson` by Benoit Blanchon `^7.4.3`
+  - `HomeSpan` by Gregg `1.9.1`
 - Follow steps of ">= 3.3.0"
 
 3. On tools tab, follow settings below
@@ -47,7 +48,7 @@ Flash Frequency ➝ 80MHz
 Flash Mode ➝ QIO
 Flash Size ➝ 4MB (32Mb)
 JTAG Adapter ➝ Disabled
-Partition Scheme ➝ Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)
+Partition Scheme ➝ Huge APP (3MB No OTA/1MB SPIFFS)
 Upload Speed ➝ 921600
 ```
 
