@@ -109,7 +109,6 @@ jobs:
       fail-fast: false
       matrix:
         environment:
-          - "esp8266"
           - "esp32-c3"
     runs-on: ubuntu-24.04
     steps:
