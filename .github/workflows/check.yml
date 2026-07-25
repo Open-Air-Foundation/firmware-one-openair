@@ -1,20 +1,9 @@
-on:
-  push:
-    paths-ignore:
-      - "**/*.md"
-  pull_request:
-    paths-ignore:
-      - "**/*.md"
-
-permissions:
-  contents: read
-
+on: [push, pull_request]
 jobs:
   trailing-whitespace:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check for trailing whitespace
@@ -43,7 +32,6 @@ jobs:
           fi
 
   compile:
-    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +67,7 @@ jobs:
             fqbn: "esp8266:esp8266:d1_mini"
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: 'true'
@@ -125,12 +113,12 @@ jobs:
           - "esp32-c3"
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: 'true'
 
-      - uses: actions/setup-python@v7.0.0
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
 
