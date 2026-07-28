@@ -91,6 +91,12 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #define I2C_SDA_PIN 7
 #define I2C_SCL_PIN 6
 #define OLED_I2C_ADDR 0x3C
+#define SHT_I2C_ADDR 0x44
+#define SHT_I2C_ADDR_ALT 0x45
+
+/** Board detection probing */
+#define BOARD_DETECT_MAX_ATTEMPTS 3
+#define BOARD_DETECT_RETRY_DELAY 200 /** ms */
 
 /** Power pin */
 #define GPIO_POWER_MODULE_PIN 5
@@ -132,6 +138,7 @@ uint32_t agCeClientProblemDetectedTime = 0;
 SemaphoreHandle_t mutexMeasurementCycleQueue;
 static AirgradientClient::AirgradientPayload measurementPayload;
 
+static BoardType detectBoardType(void);
 static void boardInit(void);
 static void initializeNetwork();
 static void failedHandler(String msg);
@@ -200,14 +207,7 @@ void setup() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   delay(1000);
 
-  /** Detect board type: ONE_INDOOR has OLED display, Scan the I2C address to
-   * identify board type */
-  Wire.beginTransmission(OLED_I2C_ADDR);
-  if (Wire.endTransmission() == 0x00) {
-    ag = new AirGradient(BoardType::ONE_INDOOR);
-  } else {
-    ag = new AirGradient(BoardType::OPEN_AIR_OUTDOOR);
-  }
+  ag = new AirGradient(detectBoardType());
   Serial.println("Detected " + ag->getBoardName());
 
   /** Print device ID into log */
@@ -984,6 +984,44 @@ static void openAirInit(void) {
     }
   }
   Serial.printf("Firmware Mode: %s\r\n", AgFirmwareModeName(fwMode));
+}
+
+/**
+ * @brief Detect board type by probing the I2C bus for devices that only the
+ * ONE has:
+ * - SHT4x/SHT3x temperature and humidity sensor (0x44, alternate 0x45)
+ * - OLED display (0x3C)
+ *
+ * The SGP41 (0x59) air quality sensor is present on both boards, so it
+ * should NOT be used to discriminate.
+ *
+ * Probing multiple devices with retries prevents a ONE with an unresponsive
+ * OLED from being misidentified as an Open Air.
+ */
+static BoardType detectBoardType(void) {
+  auto i2cDeviceDetected = [](uint8_t address) -> bool {
+    Wire.beginTransmission(address);
+    return Wire.endTransmission() == 0x00;
+  };
+
+  for (int attempt = 1; attempt <= BOARD_DETECT_MAX_ATTEMPTS; attempt++) {
+    bool oledDetected = i2cDeviceDetected(OLED_I2C_ADDR);
+    bool shtDetected = i2cDeviceDetected(SHT_I2C_ADDR) ||
+                       i2cDeviceDetected(SHT_I2C_ADDR_ALT);
+    if (oledDetected || shtDetected) {
+      Serial.printf("Board detect attempt %d: OLED %s, SHT %s\r\n", attempt,
+                    oledDetected ? "detected" : "not responding",
+                    shtDetected ? "detected" : "not responding");
+      return BoardType::ONE_INDOOR;
+    }
+    if (attempt < BOARD_DETECT_MAX_ATTEMPTS) {
+      delay(BOARD_DETECT_RETRY_DELAY);
+    }
+  }
+
+  Serial.printf("Board detect: no response from OLED or SHT after %d attempts\r\n",
+                BOARD_DETECT_MAX_ATTEMPTS);
+  return BoardType::OPEN_AIR_OUTDOOR;
 }
 
 static void boardInit(void) {
