@@ -79,6 +79,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #define SENSOR_PM_UPDATE_INTERVAL 2000                     /** ms */
 #define SENSOR_TEMP_HUM_UPDATE_INTERVAL 6000               /** ms */
 #define DISPLAY_DELAY_SHOW_CONTENT_MS 2000                 /** ms */
+#define BOARD_SELECTION_REBOOT_DELAY_MS 3000               /** ms */
 #define FIRMWARE_CHECK_FOR_UPDATE_MS (60 * 60 * 1000)      /** ms */
 #define TIME_TO_START_POWER_CYCLE_CELLULAR_MODULE (1 * 60) /** minutes */
 #define TIMEOUT_WAIT_FOR_CELLULAR_MODULE_READY (2 * 60)    /** minutes */
@@ -104,6 +105,7 @@ static TaskHandle_t mqttTask = NULL;
 static Configuration configuration(Serial);
 static Measurements measurements(configuration);
 static AirGradient *ag;
+static bool oledDetected = false;
 static AgSatellites *satellites = nullptr;
 static OledDisplay oledDisplay(configuration, measurements, Serial);
 static StateMachine stateMachine(oledDisplay, Serial, measurements, configuration);
@@ -116,6 +118,7 @@ static AirgradientClient *agClient;
 
 enum NetworkOption { UseWifi, UseCellular };
 NetworkOption networkOption;
+static TaskHandle_t mainTaskHandle = NULL;
 TaskHandle_t handleNetworkTask = NULL;
 static bool firmwareUpdateInProgress = false;
 
@@ -165,6 +168,8 @@ static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
+static bool isIndoorBoardSelected();
+static void requestBoardSelectionReboot();
 
 AgSchedule dispLedSchedule(DISP_UPDATE_INTERVAL, updateDisplayAndLedBar);
 AgSchedule configSchedule(WIFI_SERVER_CONFIG_SYNC_INTERVAL, configurationUpdateSchedule);
@@ -183,6 +188,7 @@ void setup() {
   /** Serial for print debug message */
   Serial.begin(115200);
   delay(100); /** For bester show log */
+  mainTaskHandle = xTaskGetCurrentTaskHandle();
 
   // Enable cullular module power board
   pinMode(GPIO_EXPANSION_CARD_POWER, OUTPUT);
@@ -200,15 +206,23 @@ void setup() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   delay(1000);
 
-  /** Detect board type: ONE_INDOOR has OLED display, Scan the I2C address to
-   * identify board type */
+  /** Detect board type from OLED or persisted model. */
   Wire.beginTransmission(OLED_I2C_ADDR);
-  if (Wire.endTransmission() == 0x00) {
+  oledDetected = Wire.endTransmission() == 0x00;
+  if (isIndoorBoardSelected()) {
     ag = new AirGradient(BoardType::ONE_INDOOR);
   } else {
     ag = new AirGradient(BoardType::OPEN_AIR_OUTDOOR);
   }
   Serial.println("Detected " + ag->getBoardName());
+  Serial.printf(
+      "Board selection: OLED=%s, model=%s, source=%s, selected=%s\n",
+      oledDetected ? "detected" : "not detected",
+      configuration.getModel().c_str(),
+      oledDetected
+          ? "OLED"
+          : (configuration.getModel().startsWith("I-") ? "model" : "default"),
+      ag->getBoardName().c_str());
 
   /** Print device ID into log */
   Serial.println("Serial nr: " + ag->deviceId());
@@ -321,6 +335,16 @@ void loop() {
     // Firmare update currently in progress, temporarily disable running sensor schedules
     delay(10000);
     return;
+  }
+
+  if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
+    Serial.printf("Rebooting in %u ms to apply model-based board selection\n",
+                  BOARD_SELECTION_REBOOT_DELAY_MS);
+    if (ag->isOne()) {
+      oledDisplay.setText("Model changed", "Rebooting...", "");
+    }
+    delay(BOARD_SELECTION_REBOOT_DELAY_MS);
+    esp_restart();
   }
 
   // Schedule to update display and led
@@ -1322,8 +1346,32 @@ static void configUpdateHandle() {
     }
   }
 
+  requestBoardSelectionReboot();
+
   // Update display and led bar notification based on updated configuration
   updateDisplayAndLedBar();
+}
+
+static bool isIndoorBoardSelected() {
+  return oledDetected || configuration.getModel().startsWith("I-");
+}
+
+static void requestBoardSelectionReboot() {
+  const bool selectIndoor = isIndoorBoardSelected();
+  if (selectIndoor == ag->isOne()) {
+    return;
+  }
+
+  Serial.printf("Board selection changed: OLED=%s, model=%s, selected=%s\n",
+                oledDetected ? "detected" : "not detected",
+                configuration.getModel().c_str(),
+                selectIndoor ? "ONE_INDOOR" : "OPEN_AIR_OUTDOOR");
+  if (mainTaskHandle == NULL) {
+    Serial.println(
+        "Cannot request board selection reboot: main task unavailable");
+    return;
+  }
+  xTaskNotifyGive(mainTaskHandle);
 }
 
 static void updateDisplayAndLedBar(void) {
