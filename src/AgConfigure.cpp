@@ -100,6 +100,11 @@ static bool jsonTypeInvalid(JSONVar root, String validType) {
   return true;
 }
 
+static bool isValidLocalModel(const String &model) {
+  return model.length() > 2 &&
+         (model.startsWith("I-") || model.startsWith("O-"));
+}
+
 /**
  * @brief Get LedBarMode Name
  *
@@ -941,24 +946,29 @@ bool Configuration::parse(String data, bool isLocal) {
     }
   }
 
-  /** Parse data only got from AirGradient server */
-  if (isLocal == false) {
-    if (JSON.typeof_(root[jprop_model]) == "string") {
-      String model = root[jprop_model];
-      String oldModel = jconfig[jprop_model];
-      if (model != oldModel) {
-        changed = true;
-        configLogInfo(String(jprop_model), oldModel, model);
-        jconfig[jprop_model] = model;
-      }
-    } else {
-      if (jsonTypeInvalid(root[jprop_model], "string")) {
-        failedMessage = jsonTypeInvalidMessage(String(jprop_model), "string");
-        jsonInvalid();
-        return false;
-      }
+  if (JSON.typeof_(root[jprop_model]) == "string") {
+    String model = root[jprop_model];
+    if (isLocal && !isValidLocalModel(model)) {
+      failedMessage = jsonValueInvalidMessage(String(jprop_model), model);
+      jsonInvalid();
+      return false;
     }
 
+    String oldModel = jconfig[jprop_model];
+    if (model != oldModel) {
+      changed = true;
+      configLogInfo(String(jprop_model), oldModel, model);
+      jconfig[jprop_model] = model;
+    }
+  } else {
+    if (jsonTypeInvalid(root[jprop_model], "string")) {
+      failedMessage = jsonTypeInvalidMessage(String(jprop_model), "string");
+      jsonInvalid();
+      return false;
+    }
+  }
+
+  if (isLocal == false) {
     // Check for satellites
     if (updateSatellites(root)) {
       changed = true;
