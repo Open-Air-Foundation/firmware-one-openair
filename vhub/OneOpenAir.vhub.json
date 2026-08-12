@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "1531b84",
+  "rev": "5d88234",
   "product": {
     "slug": "one-open-air",
     "name": "ONE Indoor & Open Air",
@@ -27,6 +27,33 @@
       "description": "OPEN_AIR_OUTDOOR board is correctly identified at boot",
       "expected_result": "Serial log contains \"Detected OPEN_AIR_OUTDOOR\".",
       "notes": "Requires: serial log. Open Air has no display, so this test is log-only."
+    },
+    {
+      "id": "boot.board-detect.model-indoor-fallback",
+      "category": "Boot & Hardware Detection",
+      "sub_category": "Board detection",
+      "applies_to": ["ONE_INDOOR"],
+      "description": "A persisted I- model selects ONE_INDOOR when the OLED probe fails",
+      "expected_result": "With an unprovisioned eFuse, the OLED unavailable, and persisted model set to I-9PSL, the serial log contains \"Detected ONE_INDOOR\" and \"Board selection: eFuse=unprovisioned (0x00), OLED=not detected, model=I-9PSL, selected=ONE_INDOOR\".",
+      "notes": "Requires an unprovisioned device and a controlled OLED-probe failure, such as a disconnected OLED. Restore the normal model after the test."
+    },
+    {
+      "id": "boot.board-detect.oled-override",
+      "category": "Boot & Hardware Detection",
+      "sub_category": "Board detection",
+      "applies_to": ["ONE_INDOOR"],
+      "description": "A detected OLED overrides a persisted O- model",
+      "expected_result": "With an unprovisioned eFuse, model set to O-1PST, and the OLED connected, the serial log contains \"Detected ONE_INDOOR\" and \"Board selection: eFuse=unprovisioned (0x00), OLED=detected, model=O-1PST, selected=ONE_INDOOR\".",
+      "notes": "Requires an unprovisioned ONE_INDOOR unit and configurationControl set to local or both. Restore the normal model after the test."
+    },
+    {
+      "id": "boot.board-detect.efuse-identity",
+      "category": "Boot & Hardware Detection",
+      "sub_category": "Board detection",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "A provisioned eFuse identity is authoritative for board selection",
+      "expected_result": "An indoor-provisioned device logs eFuse=indoor (0xA5) and selected=ONE_INDOOR. An outdoor-provisioned device logs eFuse=outdoor (0x5A) and selected=OPEN_AIR_OUTDOOR. Selection remains unchanged when OLED detection or the configured model conflicts with eFuse.",
+      "notes": "Requires devices provisioned with tools/program_hardware_identity.py. eFuse writes are irreversible; use manufacturing samples with known identities."
     },
     {
       "id": "boot.firmware-model.indoor-i-9psl",
@@ -756,6 +783,33 @@
       "description": "PUT /config applies configuration changes and returns success or failure",
       "expected_result": "HTTP PUT to /config with a valid recognized JSON config change (e.g. {\"temperatureUnit\":\"f\"}) returns 200 with body \"Success\"; the change takes effect immediately where applicable. Invalid JSON or invalid value/type for a recognized field returns 400 with config.getFailedMessage(). Unknown fields may be ignored and still return \"Success\".",
       "notes": "Requires: curl/Postman. Local PUT is only accepted when configurationControl is local or both. If already cloud, local PUT returns 400 with the cloud-only message, except a PUT that changes configurationControl away from cloud is handled by config parsing and can succeed."
+    },
+    {
+      "id": "local-server.put-config.model",
+      "category": "Local Server (WiFi)",
+      "sub_category": "Configuration model",
+      "applies_to": ["ONE_INDOOR"],
+      "description": "PUT /config accepts a locally configured I- or O- model",
+      "expected_result": "With configurationControl set to local or both, PUT {\"model\":\"I-9PSL\"} and PUT {\"model\":\"O-1PST\"} each return 200 with body \"Success\". GET /config returns the stored model. On an unprovisioned device, a reboot occurs only if the effective board selection changes.",
+      "notes": "Requires a ONE_INDOOR unit because Open Air GET /config replaces the stored model with the runtime firmware mode. A provisioned eFuse is authoritative, so model updates are stored without changing board selection or rebooting."
+    },
+    {
+      "id": "local-server.put-config.model-invalid",
+      "category": "Local Server (WiFi)",
+      "sub_category": "Configuration model",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "PUT /config rejects a local model without an I- or O- prefix",
+      "expected_result": "With configurationControl set to local or both, PUT {\"model\":\"DIY-PRO-I-4.2PS\"}, {\"model\":\"invalid\"}, or {\"model\":\"\"} returns 400 and leaves the stored model unchanged.",
+      "notes": "A local model must contain at least one character after the I- or O- prefix. Cloud-provided model strings remain backward compatible and are not restricted by this local validation."
+    },
+    {
+      "id": "local-server.put-config.model-reboot",
+      "category": "Local Server (WiFi)",
+      "sub_category": "Configuration model",
+      "applies_to": ["OPEN_AIR_OUTDOOR"],
+      "description": "A model update reboots when it changes the effective board selection",
+      "expected_result": "On an Open Air unit with an unprovisioned eFuse and no OLED, PUT {\"model\":\"I-9PSL\"} returns 200, persists the model, logs a board-selection change, then reboots. The next boot logs eFuse=unprovisioned, model=I-9PSL, and selected=ONE_INDOOR.",
+      "notes": "Requires an unprovisioned device. Restore an O- model after the test. Provisioned devices do not reboot for model updates because eFuse is authoritative."
     },
     {
       "id": "local-server.get-measures-current",
