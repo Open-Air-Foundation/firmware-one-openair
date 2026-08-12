@@ -31,6 +31,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #endif
 
 #include "AgConfigure.h"
+#include "AgHardwareIdentity.h"
 #include "AgSatellites.h"
 #include "AgSchedule.h"
 #include "AgStateMachine.h"
@@ -105,6 +106,7 @@ static TaskHandle_t mqttTask = NULL;
 static Configuration configuration(Serial);
 static Measurements measurements(configuration);
 static AirGradient *ag;
+static AgHardwareIdentity hardwareIdentity;
 static bool oledDetected = false;
 static AgSatellites *satellites = nullptr;
 static OledDisplay oledDisplay(configuration, measurements, Serial);
@@ -168,7 +170,7 @@ static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
 static void restoreOperatorState();
-static bool isIndoorBoardSelected();
+static BoardType getBoardType();
 static void requestBoardSelectionReboot();
 
 AgSchedule dispLedSchedule(DISP_UPDATE_INTERVAL, updateDisplayAndLedBar);
@@ -189,6 +191,7 @@ void setup() {
   Serial.begin(115200);
   delay(100); /** For bester show log */
   mainTaskHandle = xTaskGetCurrentTaskHandle();
+  hardwareIdentity.begin();
 
   // Enable cullular module power board
   pinMode(GPIO_EXPANSION_CARD_POWER, OUTPUT);
@@ -206,23 +209,16 @@ void setup() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   delay(1000);
 
-  /** Detect board type from OLED or persisted model. */
+  /** Detect board type from eFuse, OLED, or persisted model. */
   Wire.beginTransmission(OLED_I2C_ADDR);
   oledDetected = Wire.endTransmission() == 0x00;
-  if (isIndoorBoardSelected()) {
-    ag = new AirGradient(BoardType::ONE_INDOOR);
-  } else {
-    ag = new AirGradient(BoardType::OPEN_AIR_OUTDOOR);
-  }
+  ag = new AirGradient(getBoardType());
   Serial.println("Detected " + ag->getBoardName());
-  Serial.printf(
-      "Board selection: OLED=%s, model=%s, source=%s, selected=%s\n",
-      oledDetected ? "detected" : "not detected",
-      configuration.getModel().c_str(),
-      oledDetected
-          ? "OLED"
-          : (configuration.getModel().startsWith("I-") ? "model" : "default"),
-      ag->getBoardName().c_str());
+  Serial.printf("Board selection: eFuse=%s (0x%02X), OLED=%s, model=%s, "
+                "selected=%s\n",
+                hardwareIdentity.getValueName(), hardwareIdentity.getRawValue(),
+                oledDetected ? "detected" : "not detected",
+                configuration.getModel().c_str(), ag->getBoardName().c_str());
 
   /** Print device ID into log */
   Serial.println("Serial nr: " + ag->deviceId());
@@ -338,10 +334,10 @@ void loop() {
   }
 
   if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
-    Serial.printf("Rebooting in %u ms to apply model-based board selection\n",
+    Serial.printf("Rebooting in %u ms to apply hardware board selection\n",
                   BOARD_SELECTION_REBOOT_DELAY_MS);
     if (ag->isOne()) {
-      oledDisplay.setText("Model changed", "Rebooting...", "");
+      oledDisplay.setText("Hardware changed", "Rebooting...", "");
     }
     delay(BOARD_SELECTION_REBOOT_DELAY_MS);
     esp_restart();
@@ -1352,20 +1348,25 @@ static void configUpdateHandle() {
   updateDisplayAndLedBar();
 }
 
-static bool isIndoorBoardSelected() {
-  return oledDetected || configuration.getModel().startsWith("I-");
+static BoardType getBoardType() {
+  return hardwareIdentity.resolve(oledDetected, configuration.getModel());
 }
 
 static void requestBoardSelectionReboot() {
-  const bool selectIndoor = isIndoorBoardSelected();
-  if (selectIndoor == ag->isOne()) {
+  if (hardwareIdentity.isProvisioned()) {
+    return;
+  }
+
+  const BoardType boardType = getBoardType();
+  if (boardType == ag->getBoardType()) {
     return;
   }
 
   Serial.printf("Board selection changed: OLED=%s, model=%s, selected=%s\n",
                 oledDetected ? "detected" : "not detected",
                 configuration.getModel().c_str(),
-                selectIndoor ? "ONE_INDOOR" : "OPEN_AIR_OUTDOOR");
+                boardType == BoardType::ONE_INDOOR ? "ONE_INDOOR"
+                                                   : "OPEN_AIR_OUTDOOR");
   if (mainTaskHandle == NULL) {
     Serial.println(
         "Cannot request board selection reboot: main task unavailable");
