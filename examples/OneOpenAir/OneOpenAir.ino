@@ -1100,8 +1100,10 @@ static void restoreOperatorState() {
     return;
   }
   uint32_t opId = configuration.getCellOperatorId();
-  if (cellularCard->setOperators(ops.c_str(), opId)) {
-    Serial.printf("Restored operator state: id=%u, list=%s\n", opId, ops.c_str());
+  uint32_t failCount = configuration.getCellOperatorFailCount();
+  if (cellularCard->setOperators(ops.c_str(), opId, failCount)) {
+    Serial.printf("Restored operator state: id=%u, failCount=%u, list=%s\n", opId,
+                  failCount, ops.c_str());
   } else {
     Serial.println("Failed to restore operator state");
   }
@@ -1110,8 +1112,10 @@ static void restoreOperatorState() {
 static void saveOperatorState() {
   String ops = cellularCard->getSerializedOperators().c_str();
   uint32_t opId = cellularCard->getCurrentOperatorId();
-  configuration.setCellOperatorState(ops, opId);
-  Serial.printf("Saved operator state: id=%u, list=%s\n", opId, ops.c_str());
+  uint32_t failCount = cellularCard->getRegistrationFailCount();
+  configuration.setCellOperatorState(ops, opId, failCount);
+  Serial.printf("Saved operator state: id=%u, failCount=%u, list=%s\n", opId,
+                failCount, ops.c_str());
 }
 
 void initializeNetwork() {
@@ -1151,6 +1155,9 @@ void initializeNetwork() {
   agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
 
   if (!agClient->begin(ag->deviceId().c_str(), getClientPayloadType())) {
+    if (networkOption == UseCellular) {
+      saveOperatorState();
+    }
     oledDisplay.setText("Client", "initialization", "failed");
     delay(5000);
     oledDisplay.showRebooting();
