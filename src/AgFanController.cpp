@@ -1,5 +1,6 @@
-#include "AgFanController.h"
+#ifdef ESP32
 
+#include "AgFanController.h"
 #include <cmath>
 
 FanController::FanController(TwoWire &wire)
@@ -128,3 +129,5 @@ uint16_t FanController::_speedPercentToRPM(uint8_t speed) {
   const uint32_t rpmOffset = ((rpmRange * speed) + 50U) / 100U;
   return static_cast<uint16_t>(FAN_CONTROLLER_MIN_RPM + rpmOffset);
 }
+
+#endif
