@@ -483,17 +483,15 @@ static void fanControllerUpdate(void) {
   const float co2 = measurements.getAverage(Measurements::CO2);
   const bool hasCo2 = utils::isValidCO2(co2);
 
-  const uint16_t previousTargetRpm = fanController->getTargetRPM();
   if (!fanController->update(pm25, hasPm25, co2, hasCo2)) {
     Serial.println("Failed to update fan target speed");
     return;
   }
 
-  if (fanController->getTargetRPM() != previousTargetRpm) {
-    Serial.printf("Fan target: %u%% (%u RPM), PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
-                  fanController->getSpeedPercent(), fanController->getTargetRPM(), pm25,
-                  hasPm25 ? "valid" : "invalid", co2, hasCo2 ? "valid" : "invalid");
-  }
+  const uint16_t tachCount = fanController->getTachCount();
+  Serial.printf("Fan target: %u%%, TACH=%u, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
+                fanController->getSpeedPercent(), tachCount, pm25, hasPm25 ? "valid" : "invalid",
+                co2, hasCo2 ? "valid" : "invalid");
 }
 
 void printMeasurements() { measurements.printCurrentAverage(); }

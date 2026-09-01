@@ -31,6 +31,7 @@ public:
   bool isActive(void) const;
   uint8_t getSpeedPercent(void) const;
   uint16_t getTargetRPM(void) const;
+  uint16_t getTachCount(void);
   uint8_t getProductID(void) const;
 
 private:

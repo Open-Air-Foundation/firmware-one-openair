@@ -71,6 +71,8 @@ uint8_t FanController::getSpeedPercent(void) const { return speedPercent; }
 
 uint16_t FanController::getTargetRPM(void) const { return targetRpm; }
 
+uint16_t FanController::getTachCount(void) { return emc230x.getTachCount(FAN_CONTROLLER_CHANNEL); }
+
 uint8_t FanController::getProductID(void) const { return productId; }
 
 uint8_t FanController::_calculateSpeedPercent(float pm25Ugm3, bool hasPm25, float co2Ppm,
