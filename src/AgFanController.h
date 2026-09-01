@@ -1,6 +1,8 @@
 #ifndef FAN_CONTROLLER_H
 #define FAN_CONTROLLER_H
 
+#ifdef ESP32
+
 #include "Libraries/EMC230x/EMC230x.h"
 
 #include <Arduino.h>
@@ -45,4 +47,5 @@ private:
   uint8_t productId;
 };
 
+#endif // ESP32
 #endif // FAN_CONTROLLER_H

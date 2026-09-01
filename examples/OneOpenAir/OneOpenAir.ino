@@ -42,7 +42,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #include "Arduino.h"
 #include "EEPROM.h"
 #include "ESPmDNS.h"
-#include "FanController.h"
+#include "AgFanController.h"
 #include "Libraries/airgradient-client/src/common.h"
 #include "LocalServer.h"
 #include "MqttClient.h"

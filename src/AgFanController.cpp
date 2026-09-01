@@ -1,4 +1,4 @@
-#include "FanController.h"
+#include "AgFanController.h"
 
 #include <cmath>
 
