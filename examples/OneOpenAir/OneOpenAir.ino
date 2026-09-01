@@ -1697,7 +1697,15 @@ void postUsingWifi() {
   int bootCount = measurements.bootCount() + 1;
   measurements.setBootCount(bootCount);
 
-  String payload = measurements.toString(false, fwMode, wifiConnector.RSSI());
+  int fanSpeedPercent = -1;
+  int tachCount = -1;
+  if (fanController != nullptr && fanController->isActive()) {
+    fanSpeedPercent = fanController->getSpeedPercent();
+    tachCount = fanController->getTachCount();
+  }
+
+  String payload =
+      measurements.toString(false, fwMode, wifiConnector.RSSI(), fanSpeedPercent, tachCount);
   if (agClient->httpPostMeasures(payload.c_str()) == false) {
     Serial.println();
     Serial.println("Online mode and isPostToAirGradient = true");
