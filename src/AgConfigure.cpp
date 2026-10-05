@@ -431,18 +431,22 @@ void Configuration::emptySatellites() {
  * @brief Save configure to device storage (EEPROM)
  *
  */
-void Configuration::saveConfig(void) {
+bool Configuration::saveConfig(void) {
   String data = toString();
   int len = data.length();
+  bool saved = false;
 #ifdef ESP8266
   for (int i = 0; i < len; i++) {
     EEPROM.write(i, data[i]);
   }
-  EEPROM.commit();
+  saved = EEPROM.commit();
 #else
   File file = SPIFFS.open(CONFIG_FILE_NAME, "w", true);
   if (file && !file.isDirectory()) {
-    if (file.write((const uint8_t *)data.c_str(), len) != len) {
+    saved = file.write((const uint8_t *)data.c_str(), len) == len;
+    file.flush();
+    saved = saved && file.size() == (size_t)len;
+    if (!saved) {
       logError("Write SPIFFS file failed");
     }
     file.close();
@@ -451,6 +455,7 @@ void Configuration::saveConfig(void) {
   }
 #endif
   logInfo("Save Config");
+  return saved;
 }
 
 void Configuration::loadConfig(void) {
@@ -467,6 +472,16 @@ void Configuration::loadConfig(void) {
 #else
   File file = SPIFFS.open(CONFIG_FILE_NAME);
   if (file && !file.isDirectory()) {
+    // Correction JSON can exceed the legacy 1 KB EEPROM buffer.
+    char *resized = (char *)realloc(buf, file.size() + 1);
+    if (resized == nullptr) {
+      file.close();
+      free(buf);
+      logError("Malloc read file buffer failed");
+      return;
+    }
+    buf = resized;
+    memset(buf, 0, file.size() + 1);
     logInfo("Reading file...");
     if(file.readBytes(buf, file.size()) != file.size()) {
       logError("Reading file: failed - size not match");

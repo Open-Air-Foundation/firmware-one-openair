@@ -56,7 +56,7 @@ private:
                                const char *correctionName);
   bool updateSatellites(JSONVar &json);
   void emptySatellites();
-  void saveConfig(void);
+  bool saveConfig(void);
   void loadConfig(void);
   void defaultConfig(void);
   void printConfig(void);
