@@ -58,7 +58,7 @@ private:
   void emptySatellites();
   bool saveConfig(void);
   void loadConfig(void);
-  void defaultConfig(void);
+  void defaultConfig(bool persist = true);
   void printConfig(void);
   String jsonTypeInvalidMessage(String name, String type);
   String jsonValueInvalidMessage(String name, String value);
@@ -104,6 +104,8 @@ public:
   bool isCo2CalibrationRequested(void);
   bool isLedBarTestRequested(void);
   void reset(void);
+  bool resetKeepingCorrections(void);
+  bool setSlrCorrection(const char *target, float scale, float intercept);
   String getModel(void);
   bool isUpdated(void);
   bool isCommandRequested(void);

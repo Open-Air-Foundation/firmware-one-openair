@@ -498,6 +498,16 @@ void WifiConnector::reset(void) {
   WIFI()->resetSettings();
 }
 
+#ifdef ESP32
+bool WifiConnector::clearCredentials(void) {
+  hasConfig = false;
+  WiFi.setAutoReconnect(false);
+  const bool erased = WiFi.eraseAP();
+  WiFi.disconnect();
+  return erased;
+}
+#endif
+
 /**
  * @brief Get wifi RSSI
  *
