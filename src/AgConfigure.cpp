@@ -233,11 +233,11 @@ bool Configuration::updatePmCorrection(JSONVar &json) {
   // arduino_json doesn't support float type, need to cast to double first
   float intercept = (float)((double)slr["intercept"]);
   float scalingFactor = (float)((double)slr[scalingFactorKey]);
+  const bool useEPA = (bool)slr["useEpa2021"];
 
   // Compare with current pmCorrection
   if (pmCorrection.algorithm == algo && pmCorrection.intercept == intercept &&
-      pmCorrection.scalingFactor == scalingFactor &&
-      pmCorrection.useEPA == (bool)slr["useEpa2021"]) {
+      pmCorrection.scalingFactor == scalingFactor && pmCorrection.useEPA == useEPA) {
     return false; // No changes needed
   }
 
@@ -248,7 +248,7 @@ bool Configuration::updatePmCorrection(JSONVar &json) {
   pmCorrection.algorithm = algo;
   pmCorrection.intercept = intercept;
   pmCorrection.scalingFactor = scalingFactor;
-  pmCorrection.useEPA = (bool)slr["useEpa2021"];
+  pmCorrection.useEPA = useEPA;
   pmCorrection.changed = true;
 
   // Correction values were updated
@@ -431,18 +431,22 @@ void Configuration::emptySatellites() {
  * @brief Save configure to device storage (EEPROM)
  *
  */
-void Configuration::saveConfig(void) {
+bool Configuration::saveConfig(void) {
   String data = toString();
   int len = data.length();
+  bool saved = false;
 #ifdef ESP8266
   for (int i = 0; i < len; i++) {
     EEPROM.write(i, data[i]);
   }
-  EEPROM.commit();
+  saved = EEPROM.commit();
 #else
   File file = SPIFFS.open(CONFIG_FILE_NAME, "w", true);
   if (file && !file.isDirectory()) {
-    if (file.write((const uint8_t *)data.c_str(), len) != len) {
+    saved = file.write((const uint8_t *)data.c_str(), len) == len;
+    file.flush();
+    saved = saved && file.size() == (size_t)len;
+    if (!saved) {
       logError("Write SPIFFS file failed");
     }
     file.close();
@@ -451,6 +455,7 @@ void Configuration::saveConfig(void) {
   }
 #endif
   logInfo("Save Config");
+  return saved;
 }
 
 void Configuration::loadConfig(void) {
@@ -467,6 +472,16 @@ void Configuration::loadConfig(void) {
 #else
   File file = SPIFFS.open(CONFIG_FILE_NAME);
   if (file && !file.isDirectory()) {
+    // Correction JSON can exceed the legacy 1 KB EEPROM buffer.
+    char *resized = (char *)realloc(buf, file.size() + 1);
+    if (resized == nullptr) {
+      file.close();
+      free(buf);
+      logError("Malloc read file buffer failed");
+      return;
+    }
+    buf = resized;
+    memset(buf, 0, file.size() + 1);
     logInfo("Reading file...");
     if(file.readBytes(buf, file.size()) != file.size()) {
       logError("Reading file: failed - size not match");
@@ -486,7 +501,7 @@ void Configuration::loadConfig(void) {
  * @brief Set configuration default
  *
  */
-void Configuration::defaultConfig(void) {
+void Configuration::defaultConfig(bool persist) {
   jconfig = JSON.parse("{}");
 
   jconfig[jprop_country] = jprop_country_default;
@@ -524,7 +539,9 @@ void Configuration::defaultConfig(void) {
   pmCorrection.scalingFactor = 1;
   pmCorrection.useEPA = false;
 
-  saveConfig();
+  if (persist) {
+    saveConfig();
+  }
 }
 
 /**
@@ -1309,6 +1326,87 @@ void Configuration::reset(void) {
   defaultConfig();
   logInfo("Reset to default configure");
   printConfig();
+}
+
+bool Configuration::setSlrCorrection(const char *target, float scale, float intercept) {
+  bool isPm = false;
+  const char *key;
+  if (strcmp(target, "PM") == 0) {
+    isPm = true;
+    key = "pm02";
+  } else if (strcmp(target, "TEMP") == 0) {
+    key = "atmp";
+  } else if (strcmp(target, "HUM") == 0) {
+    key = "rhum";
+  } else {
+    return false;
+  }
+
+  JSONVar previous = JSON.parse(toString());
+  if (JSON.typeof_(previous) != "object") {
+    return false;
+  }
+  JSONVar correction = JSON.parse("{}");
+  if (isPm) {
+    correction["correctionAlgorithm"] = "factory_calibration";
+  } else {
+    correction["correctionAlgorithm"] = "custom";
+  }
+  correction["slr"]["scalingFactor"] = static_cast<double>(scale);
+  correction["slr"]["intercept"] = static_cast<double>(intercept);
+  if (isPm) {
+    const bool existingCustom = pmCorrection.algorithm == COR_ALGO_PM_SLR_CUSTOM ||
+                                pmCorrection.algorithm == COR_ALGO_PM_SLR_FACTORY_CALIBRATION ||
+                                pmCorrection.algorithm == COR_ALGO_PM_SLR_CUSTOM_VIA_PM_RAW;
+    correction["slr"]["useEpa2021"] = existingCustom && pmCorrection.useEPA;
+  }
+  jconfig[jprop_corrections][key] = correction;
+  if (!saveConfig()) {
+    jconfig = previous;
+    return false;
+  }
+  if (isPm) {
+    updatePmCorrection(jconfig);
+  } else if (strcmp(target, "TEMP") == 0) {
+    updateTempHumCorrection(jconfig, tempCorrection, key);
+  } else {
+    updateTempHumCorrection(jconfig, rhumCorrection, key);
+  }
+  return true;
+}
+
+bool Configuration::resetKeepingCorrections(void) {
+  JSONVar previous = JSON.parse(toString());
+  if (JSON.typeof_(previous) != "object") {
+    return false;
+  }
+  const PMCorrection previousPm = pmCorrection;
+  defaultConfig(false);
+  if (previous.hasOwnProperty(jprop_corrections)) {
+    // Use a named value: Arduino_JSON's move assignment only swaps views.
+    JSONVar corrections = previous[jprop_corrections];
+    jconfig[jprop_corrections] = corrections;
+  }
+  pmCorrection = previousPm;
+  if (!saveConfig()) {
+    jconfig = previous;
+    return false;
+  }
+  // Corrections stay active; reset the other runtime configuration as well.
+  emptySatellites();
+  _satellitesChanged = true;
+  co2CalibrationRequested = false;
+  ledBarTestRequested = false;
+  commandRequested = false;
+  otaNewFirmwareVersion = "";
+  _offlineMode = false;
+  _noxLearnOffsetChanged = true;
+  _tvocLearningOffsetChanged = true;
+  ledBarBrightnessChanged = true;
+  displayBrightnessChanged = true;
+  _ledBarModeChanged = true;
+  updated = true;
+  return true;
 }
 
 /**

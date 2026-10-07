@@ -47,6 +47,7 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #include "LocalServer.h"
 #include "MqttClient.h"
 #include "OpenMetrics.h"
+#include "AgSerialCommands.h"
 #include "WebServer.h"
 #include "esp32c3/rom/rtc.h"
 #include <HardwareSerial.h>
@@ -124,7 +125,12 @@ enum NetworkOption { UseWifi, UseCellular };
 NetworkOption networkOption;
 static TaskHandle_t mainTaskHandle = NULL;
 TaskHandle_t handleNetworkTask = NULL;
+static TaskHandle_t handleSerialTask = NULL;
 static bool firmwareUpdateInProgress = false;
+static bool serialResetRequested = false;
+static void serialCommandHandle(const AgSerialCommands::Request &request, char *response,
+                                size_t size);
+static AgSerialCommands serialCommands(Serial, serialCommandHandle);
 
 static uint32_t factoryBtnPressTime = 0;
 static AgFirmwareMode fwMode = FW_MODE_I_9PSL;
@@ -169,6 +175,7 @@ static void newMeasurementCycle();
 static void restartIfCeClientIssueOverTwoHours();
 static void networkSignalCheck();
 static void networkingTask(void *args);
+static void serialCommandTask(void *args);
 static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
@@ -293,6 +300,18 @@ void setup() {
 
   // Initialize networking configuration
   if (connectToNetwork) {
+    BaseType_t xReturned =
+        xTaskCreate(serialCommandTask, "SerialCommandTask", 8192, nullptr, 5, &handleSerialTask);
+    if (xReturned == pdPASS) {
+      Serial.onEvent(ARDUINO_HW_CDC_RX_EVENT,
+                     [](void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData) {
+                       xTaskNotifyGive(handleSerialTask);
+                     });
+      // Process any bytes received before the callback was registered.
+      xTaskNotifyGive(handleSerialTask);
+    } else {
+      Serial.println("Failed to create serial command task");
+    }
     oledDisplay.setText("Initialize", "network...", "");
     initializeNetwork();
     wifiConnector.stopBLE();
@@ -424,6 +443,73 @@ void loop() {
     stateMachine.executeCo2Calibration();
     stateMachine.executeLedBarTest();
   }
+}
+
+static void serialCommandTask(void *args) {
+  while (1) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    do {
+      serialCommands.run();
+      vTaskDelay(1);
+    } while (Serial.available() > 0);
+  }
+}
+
+static void serialCommandHandle(const AgSerialCommands::Request &request, char *response,
+                                size_t size) {
+  using Command = AgSerialCommands::Command;
+  const char *target = AgSerialCommands::targetName(request.target);
+  float scale = request.scale;
+  float intercept = request.intercept;
+  switch (request.command) {
+  case Command::Help:
+    snprintf(response, size,
+             "OK COMMANDS HELP GET_SERIAL SET_SLR <PM|TEMP|HUM> <scale> <intercept> "
+             "GET_SLR <PM|TEMP|HUM> FACTORY_RESET");
+    return;
+  case Command::GetSerial:
+    snprintf(response, size, "OK SERIAL %s", ag->deviceId().c_str());
+    return;
+  case Command::SetSlr:
+    if (!configuration.setSlrCorrection(target, scale, intercept)) {
+      snprintf(response, size, "ERROR OPERATION_FAILED");
+      return;
+    }
+    break;
+  case Command::GetSlr:
+    if (request.target == AgSerialCommands::Target::PM) {
+      const auto correction = configuration.getPMCorrection();
+      if (correction.algorithm != COR_ALGO_PM_SLR_FACTORY_CALIBRATION &&
+          correction.algorithm != COR_ALGO_PM_SLR_CUSTOM) {
+        snprintf(response, size, "ERROR SLR_NOT_SET");
+        return;
+      }
+      scale = correction.scalingFactor;
+      intercept = correction.intercept;
+    } else {
+      const auto correction = request.target == AgSerialCommands::Target::Temperature
+                                  ? configuration.getTempCorrection()
+                                  : configuration.getHumCorrection();
+      if (correction.algorithm != COR_ALGO_TEMP_HUM_SLR_CUSTOM) {
+        snprintf(response, size, "ERROR SLR_NOT_SET");
+        return;
+      }
+      scale = correction.scalingFactor;
+      intercept = correction.intercept;
+    }
+    break;
+  case Command::FactoryReset: {
+    serialResetRequested = true;
+    const bool success = configuration.resetKeepingCorrections();
+    if (success) {
+      configUpdateHandle();
+    }
+    serialResetRequested = false;
+    snprintf(response, size, success ? "OK RESET" : "ERROR OPERATION_FAILED");
+    return;
+  }
+  }
+  snprintf(response, size, "OK SLR %s %.6f %.6f", target, scale, intercept);
 }
 
 static void co2Update(void) {
@@ -1355,17 +1441,19 @@ static void configUpdateHandle() {
     initMqtt();
   }
 
-  String httpDomain = configuration.getHttpDomain();
-  if (httpDomain != "") {
-    Serial.printf("HTTP domain name set to: %s\n", httpDomain.c_str());
-    agClient->setHttpDomain(httpDomain.c_str());
-  } else {
-    // Its empty, set to default
-    Serial.println("HTTP domain name from configuration empty, set to default");
-    agClient->setHttpDomainDefault();
-  }
+  if (agClient != nullptr) {
+    String httpDomain = configuration.getHttpDomain();
+    if (httpDomain != "") {
+      Serial.printf("HTTP domain name set to: %s\n", httpDomain.c_str());
+      agClient->setHttpDomain(httpDomain.c_str());
+    } else {
+      // Its empty, set to default
+      Serial.println("HTTP domain name from configuration empty, set to default");
+      agClient->setHttpDomainDefault();
+    }
 
-  agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
+    agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
+  }
 
   if (configuration.hasSensorSGP) {
     if (configuration.noxLearnOffsetChanged() || configuration.tvocLearnOffsetChanged()) {
@@ -1430,7 +1518,9 @@ static void configUpdateHandle() {
     }
   }
 
-  requestBoardSelectionReboot();
+  if (!serialResetRequested) {
+    requestBoardSelectionReboot();
+  }
 
   // Update display and led bar notification based on updated configuration
   updateDisplayAndLedBar();
