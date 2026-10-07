@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "rev": "5d88234",
+  "rev": "de8b03d",
   "product": {
     "slug": "one-open-air",
     "name": "ONE Indoor & Open Air",
@@ -1206,6 +1206,15 @@
       "description": "OLED display brightness is set from config at boot",
       "expected_result": "During boot, after the warming-up screen, the firmware applies the configured displayBrightness value. Serial log shows \"Display brightness: <N>\". The OLED brightness visually matches the configured level.",
       "notes": "Requires: OLED + serial log. Value range 0–100. Change via /config PUT or cloud."
+    },
+    {
+      "id": "user-action.serial-commands.manufacturing",
+      "category": "User Actions",
+      "sub_category": "Serial commands",
+      "applies_to": ["ONE_INDOOR", "OPEN_AIR_OUTDOOR"],
+      "description": "Verify serial calibration and factory reset during manufacturing",
+      "expected_result": "Serial commands respond while Wi-Fi is connecting or provisioning. The reported serial number matches the device. Set and read back PM, temperature, and humidity corrections. Factory reset restores other settings to defaults without rebooting or interrupting Wi-Fi/provisioning. Corrections remain unchanged after reset and a power cycle.",
+      "notes": "Use an unregistered ESP32 unit in online mode with the manufacturing tool connected over USB. Set a non-default configuration value before checking reset. Registered devices may receive cloud configuration that overwrites corrections."
     },
     {
       "id": "satellites.config.enable-on-boot",
