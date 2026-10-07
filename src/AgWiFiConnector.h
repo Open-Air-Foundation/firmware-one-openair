@@ -119,9 +119,6 @@ public:
   void _wifiProcess();
   bool isConnected(void);
   void reset(void);
-#ifdef ESP32
-  bool clearCredentials(void);
-#endif
   int RSSI(void);
   String localIpStr(void);
   bool hasConfigurated(void);

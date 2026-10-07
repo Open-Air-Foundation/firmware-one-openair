@@ -125,6 +125,7 @@ enum NetworkOption { UseWifi, UseCellular };
 NetworkOption networkOption;
 static TaskHandle_t mainTaskHandle = NULL;
 TaskHandle_t handleNetworkTask = NULL;
+static TaskHandle_t handleSerialTask = NULL;
 static bool firmwareUpdateInProgress = false;
 static bool serialResetRequested = false;
 static void serialCommandHandle(const AgSerialCommands::Request &request, char *response,
@@ -174,6 +175,7 @@ static void newMeasurementCycle();
 static void restartIfCeClientIssueOverTwoHours();
 static void networkSignalCheck();
 static void networkingTask(void *args);
+static void serialCommandTask(void *args);
 static AirgradientClient::PayloadType getClientPayloadType();
 static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc);
 static void saveOperatorState();
@@ -298,6 +300,18 @@ void setup() {
 
   // Initialize networking configuration
   if (connectToNetwork) {
+    BaseType_t xReturned =
+        xTaskCreate(serialCommandTask, "SerialCommandTask", 8192, nullptr, 5, &handleSerialTask);
+    if (xReturned == pdPASS) {
+      Serial.onEvent(ARDUINO_HW_CDC_RX_EVENT,
+                     [](void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData) {
+                       xTaskNotifyGive(handleSerialTask);
+                     });
+      // Process any bytes received before the callback was registered.
+      xTaskNotifyGive(handleSerialTask);
+    } else {
+      Serial.println("Failed to create serial command task");
+    }
     oledDisplay.setText("Initialize", "network...", "");
     initializeNetwork();
     wifiConnector.stopBLE();
@@ -431,6 +445,16 @@ void loop() {
   }
 }
 
+static void serialCommandTask(void *args) {
+  while (1) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    do {
+      serialCommands.run();
+      vTaskDelay(1);
+    } while (Serial.available() > 0);
+  }
+}
+
 static void serialCommandHandle(const AgSerialCommands::Request &request, char *response,
                                 size_t size) {
   using Command = AgSerialCommands::Command;
@@ -476,8 +500,7 @@ static void serialCommandHandle(const AgSerialCommands::Request &request, char *
     break;
   case Command::FactoryReset: {
     serialResetRequested = true;
-    const bool success =
-        wifiConnector.clearCredentials() && configuration.resetKeepingCorrections();
+    const bool success = configuration.resetKeepingCorrections();
     if (success) {
       configUpdateHandle();
     }
@@ -1988,7 +2011,6 @@ void networkingTask(void *args) {
   }
 
   while (1) {
-    serialCommands.run();
     // Handle reconnection based on mode
     if (networkOption == UseWifi) {
       wifiConnector.handle();
