@@ -98,8 +98,7 @@ OledDisplay::OledDisplay(Configuration &config, Measurements &value,
                          Stream &log)
     : PrintLog(log, "OledDisplay"), config(config), value(value) {
 #ifdef ESP32
-  // Recursive: public methods call each other (begin -> setBrightness,
-  // setText(String&) -> setText(const char*)).
+  // Recursive because begin() calls setBrightness() while holding the lock.
   mutex = xSemaphoreCreateRecursiveMutex();
 #endif
 }
@@ -617,8 +616,8 @@ void OledDisplay::setBrightness(int percent) {
       DISP()->firstPage();
       do {
       } while (DISP()->nextPage());
-      // Also switch the panel itself off (SH1106 0xAE), so a stray draw that
-      // slips past isDisplayOff can no longer light it.
+      // Also switch the panel off (SH1106 0xAE): showRebooting() and
+      // showWiFiProvisioning() draw without checking isDisplayOff.
       DISP()->setPowerSave(1);
 
     } else {
