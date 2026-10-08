@@ -96,7 +96,39 @@ void OledDisplay::showIcon(int x, int y, xbm_icon_t *icon) {
  */
 OledDisplay::OledDisplay(Configuration &config, Measurements &value,
                          Stream &log)
-    : PrintLog(log, "OledDisplay"), config(config), value(value) {}
+    : PrintLog(log, "OledDisplay"), config(config), value(value) {
+#ifdef ESP32
+  // Recursive: public methods call each other (begin -> setBrightness,
+  // setText(String&) -> setText(const char*)).
+  mutex = xSemaphoreCreateRecursiveMutex();
+#endif
+}
+
+void OledDisplay::lock(void) {
+#ifdef ESP32
+  if (mutex != NULL) {
+    xSemaphoreTakeRecursive(mutex, portMAX_DELAY);
+  }
+#endif
+}
+
+void OledDisplay::unlock(void) {
+#ifdef ESP32
+  if (mutex != NULL) {
+    xSemaphoreGiveRecursive(mutex);
+  }
+#endif
+}
+
+/** RAII guard: holds the display lock for the rest of the enclosing scope. */
+class OledDisplayLock {
+  OledDisplay &disp;
+
+public:
+  explicit OledDisplayLock(OledDisplay &disp) : disp(disp) { disp.lock(); }
+  ~OledDisplayLock() { disp.unlock(); }
+};
+#define DISPLAY_LOCK() OledDisplayLock _displayLock(*this)
 
 /**
  * @brief Set AirGradient instance
@@ -114,6 +146,7 @@ OledDisplay::~OledDisplay() {}
  * @return false Failure
  */
 bool OledDisplay::begin(void) {
+  DISPLAY_LOCK();
   if (isBegin) {
     logWarning("Already begin, call 'end' and try again");
     return true;
@@ -157,6 +190,7 @@ bool OledDisplay::begin(void) {
  *
  */
 void OledDisplay::end(void) {
+  DISPLAY_LOCK();
   if (!isBegin) {
     logWarning("Already end, call 'begin' and try again");
     return;
@@ -194,6 +228,7 @@ void OledDisplay::setText(String &line1, String &line2, String &line3) {
  */
 void OledDisplay::setText(const char *line1, const char *line2,
                           const char *line3) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -243,6 +278,7 @@ void OledDisplay::setText(String &line1, String &line2, String &line3,
  */
 void OledDisplay::setText(const char *line1, const char *line2,
                           const char *line3, const char *line4) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -269,6 +305,7 @@ void OledDisplay::setText(const char *line1, const char *line2,
 }
 
 void OledDisplay::showWiFiProvisioning(bool firstRun, int countdown) {
+  DISPLAY_LOCK();
   if (firstRun) {
     DISP()->clearBuffer();
     DISP()->setFont(u8g2_font_t0_16_tf);
@@ -310,6 +347,7 @@ void OledDisplay::showDashboard(void) { showDashboard(DashBoardStatusNone); }
  *
  */
 void OledDisplay::showDashboard(DashboardStatus status) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -570,6 +608,7 @@ void OledDisplay::showDashboard(DashboardStatus status) {
 }
 
 void OledDisplay::setBrightness(int percent) {
+  DISPLAY_LOCK();
   if (ag->isOne() || ag->isPro3_3() || ag->isPro4_2()) {
     if (percent == 0) {
       isDisplayOff = true;
@@ -578,9 +617,13 @@ void OledDisplay::setBrightness(int percent) {
       DISP()->firstPage();
       do {
       } while (DISP()->nextPage());
+      // Also switch the panel itself off (SH1106 0xAE), so a stray draw that
+      // slips past isDisplayOff can no longer light it.
+      DISP()->setPowerSave(1);
 
     } else {
       isDisplayOff = false;
+      DISP()->setPowerSave(0);
       DISP()->setContrast((127 * percent) / 100);
     }
   } else if (ag->isBasic()) {
@@ -599,6 +642,7 @@ void OledDisplay::setBrightness(int percent) {
 
 #ifdef ESP32
 void OledDisplay::showFirmwareUpdateVersion(String version) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -613,6 +657,7 @@ void OledDisplay::showFirmwareUpdateVersion(String version) {
 }
 
 void OledDisplay::showFirmwareUpdateProgress(int percent) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -626,6 +671,7 @@ void OledDisplay::showFirmwareUpdateProgress(int percent) {
 }
 
 void OledDisplay::showFirmwareUpdateSuccess(int count) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -640,6 +686,7 @@ void OledDisplay::showFirmwareUpdateSuccess(int count) {
 }
 
 void OledDisplay::showFirmwareUpdateFailed(void) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -654,6 +701,7 @@ void OledDisplay::showFirmwareUpdateFailed(void) {
 }
 
 void OledDisplay::showFirmwareUpdateSkipped(void) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -667,6 +715,7 @@ void OledDisplay::showFirmwareUpdateSkipped(void) {
 }
 
 void OledDisplay::showFirmwareUpdateUpToDate(void) {
+  DISPLAY_LOCK();
   if (isDisplayOff) {
     return;
   }
@@ -683,6 +732,7 @@ void OledDisplay::showFirmwareUpdateUpToDate(void) {
 #endif
 
 void OledDisplay::showRebooting(void) {
+  DISPLAY_LOCK();
   if (ag->isOne() || ag->isPro3_3() || ag->isPro4_2()) {
     DISP()->firstPage();
     do {
