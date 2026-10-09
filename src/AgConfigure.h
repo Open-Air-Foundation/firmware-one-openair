@@ -11,6 +11,12 @@
 
 class Configuration : public PrintLog {
 public:
+  struct PpsConfig {
+    uint8_t minSpeed;
+    uint8_t maxSpeed;
+    bool active;
+  };
+
   struct PMCorrection {
     PMCorrectionAlgorithm algorithm;
     float intercept;
@@ -55,6 +61,7 @@ private:
   bool updateTempHumCorrection(JSONVar &json, TempHumCorrection &target,
                                const char *correctionName);
   bool updateSatellites(JSONVar &json);
+  bool updatePps(JSONVar &json);
   void emptySatellites();
   bool saveConfig(void);
   void loadConfig(void);
@@ -138,6 +145,8 @@ public:
   bool isSatellitesChanged(void);
   bool isSatellitesEnabled(void);
   const String *getSatellites() const;
+  // Returns false when PPS is absent, leaving config unchanged.
+  bool getPpsConfig(PpsConfig &config);
   String getCellOperators(void);
   uint32_t getCellOperatorId(void);
   uint32_t getCellOperatorFailCount(void);

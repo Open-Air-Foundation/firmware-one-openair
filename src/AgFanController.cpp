@@ -4,12 +4,16 @@
 #include <cmath>
 
 FanController::FanController(TwoWire &wire)
-    : emc230x(FAN_CONTROLLER_I2C_ADDRESS, wire), active(false),
-      speedPercent(FAN_CONTROLLER_DEFAULT_SPEED_PERCENT), productId(0) {}
+    : emc230x(FAN_CONTROLLER_I2C_ADDRESS, wire), ready(false), enabled(false), minSpeed(0),
+      maxSpeed(0), speedPercent(0), productId(0) {}
 
-bool FanController::begin(void) {
-  active = false;
+bool FanController::begin(bool enable, uint8_t minimumSpeed, uint8_t maximumSpeed) {
+  ready = false;
   productId = 0;
+
+  if (!setConfig(enable, minimumSpeed, maximumSpeed)) {
+    return false;
+  }
 
   if (!emc230x.beginWithoutWireInit()) {
     return false;
@@ -33,17 +37,27 @@ bool FanController::begin(void) {
     return false;
   }
 
-  speedPercent = FAN_CONTROLLER_DEFAULT_SPEED_PERCENT;
+  speedPercent = _calculateSpeedPercent(0, false, 0, false);
   if (!emc230x.setFanSpeedPercent(FAN_CONTROLLER_CHANNEL, speedPercent)) {
     return false;
   }
 
-  active = true;
+  ready = true;
+  return true;
+}
+
+bool FanController::setConfig(bool enable, uint8_t minimumSpeed, uint8_t maximumSpeed) {
+  if (minimumSpeed > maximumSpeed || maximumSpeed > 100) {
+    return false;
+  }
+  enabled = enable;
+  minSpeed = minimumSpeed;
+  maxSpeed = maximumSpeed;
   return true;
 }
 
 bool FanController::update(float pm25Ugm3, bool hasPm25, float co2Ppm, bool hasCo2) {
-  if (!active) {
+  if (!ready) {
     return false;
   }
 
@@ -60,7 +74,7 @@ bool FanController::update(float pm25Ugm3, bool hasPm25, float co2Ppm, bool hasC
   return true;
 }
 
-bool FanController::isActive(void) const { return active; }
+bool FanController::isReady(void) const { return ready; }
 
 uint8_t FanController::getSpeedPercent(void) const { return speedPercent; }
 
@@ -75,7 +89,10 @@ int FanController::getActualRPM(void) {
 uint8_t FanController::getProductID(void) const { return productId; }
 
 uint8_t FanController::_calculateSpeedPercent(float pm25Ugm3, bool hasPm25, float co2Ppm,
-                                              bool hasCo2) {
+                                              bool hasCo2) const {
+  if (!enabled) {
+    return 0;
+  }
   float speedBasedOnPm = FAN_CONTROLLER_DEFAULT_SPEED_PERCENT;
   if (hasPm25) {
     float pmRatio = 0.0f;
@@ -85,9 +102,7 @@ uint8_t FanController::_calculateSpeedPercent(float pm25Ugm3, bool hasPm25, floa
         pmRatio = 1.0f;
       }
     }
-    speedBasedOnPm =
-        FAN_CONTROLLER_MIN_SPEED_PERCENT +
-        ((FAN_CONTROLLER_MAX_SPEED_PERCENT - FAN_CONTROLLER_MIN_SPEED_PERCENT) * pmRatio);
+    speedBasedOnPm = minSpeed + ((maxSpeed - minSpeed) * pmRatio);
   }
 
   float speedBasedOnCo2 = 0.0f;
@@ -97,9 +112,7 @@ uint8_t FanController::_calculateSpeedPercent(float pm25Ugm3, bool hasPm25, floa
     if (co2Ratio > 1.0f) {
       co2Ratio = 1.0f;
     }
-    speedBasedOnCo2 =
-        FAN_CONTROLLER_MIN_SPEED_PERCENT +
-        ((FAN_CONTROLLER_MAX_SPEED_PERCENT - FAN_CONTROLLER_MIN_SPEED_PERCENT) * co2Ratio);
+    speedBasedOnCo2 = minSpeed + ((maxSpeed - minSpeed) * co2Ratio);
   }
 
   float speed = speedBasedOnPm;
@@ -110,10 +123,10 @@ uint8_t FanController::_calculateSpeedPercent(float pm25Ugm3, bool hasPm25, floa
     speed = FAN_CONTROLLER_DEFAULT_SPEED_PERCENT;
   }
 
-  if (speed < 0.0f) {
-    speed = 0.0f;
-  } else if (speed > 100.0f) {
-    speed = 100.0f;
+  if (speed < minSpeed) {
+    speed = minSpeed;
+  } else if (speed > maxSpeed) {
+    speed = maxSpeed;
   }
   return static_cast<uint8_t>(std::round(speed));
 }

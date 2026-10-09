@@ -16,26 +16,28 @@
 #define FAN_CONTROLLER_CO2_PERFECT_PPM 500.0f
 #define FAN_CONTROLLER_CO2_TARGET_PPM 1000.0f
 #define FAN_CONTROLLER_DEFAULT_SPEED_PERCENT 40
-#define FAN_CONTROLLER_MIN_SPEED_PERCENT 30
-#define FAN_CONTROLLER_MAX_SPEED_PERCENT 50
 
 class FanController {
 public:
   explicit FanController(TwoWire &wire);
 
-  bool begin(void);
+  bool begin(bool enable, uint8_t minimumSpeed, uint8_t maximumSpeed);
+  bool setConfig(bool enable, uint8_t minimumSpeed, uint8_t maximumSpeed);
   bool update(float pm25Ugm3, bool hasPm25, float co2Ppm, bool hasCo2);
 
-  bool isActive(void) const;
+  bool isReady(void) const;
   uint8_t getSpeedPercent(void) const;
   int getActualRPM(void);
   uint8_t getProductID(void) const;
 
 private:
-  static uint8_t _calculateSpeedPercent(float pm25Ugm3, bool hasPm25, float co2Ppm, bool hasCo2);
+  uint8_t _calculateSpeedPercent(float pm25Ugm3, bool hasPm25, float co2Ppm, bool hasCo2) const;
 
   EMC230x emc230x;
-  bool active;
+  bool ready;
+  bool enabled;
+  uint8_t minSpeed;
+  uint8_t maxSpeed;
   uint8_t speedPercent;
   uint8_t productId;
 };
