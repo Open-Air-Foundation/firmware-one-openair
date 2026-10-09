@@ -6,6 +6,7 @@
 #include "EEPROM.h"
 #endif
 #include <time.h>
+#include <cmath>
 
 #define EEPROM_CONFIG_SIZE 1024
 #define CONFIG_FILE_NAME "/AgConfigure_Configuration.json"
@@ -65,6 +66,7 @@ JSON_PROP_DEF(atmp);
 JSON_PROP_DEF(rhum);
 JSON_PROP_DEF(extendedPmMeasures);
 JSON_PROP_DEF(satellites);
+JSON_PROP_DEF(pps);
 JSON_PROP_DEF(cellOperators);
 JSON_PROP_DEF(cellOperatorId);
 JSON_PROP_DEF(cellOperatorFailCount);
@@ -92,6 +94,25 @@ JSON_PROP_DEF(cellOperatorFailCount);
 #define jprop_cellOperatorFailCount_default           0
 
 JSONVar jconfig;
+
+static bool isValidPpsConfig(JSONVar &pps) {
+  if (JSON.typeof_(pps) != "object") {
+    return false;
+  }
+  if (JSON.typeof_(pps["active"]) != "boolean") {
+    return false;
+  }
+  for (const char *key : {"minSpeed", "maxSpeed"}) {
+    if (JSON.typeof_(pps[key]) != "number") {
+      return false;
+    }
+    const double value = pps[key];
+    if (!std::isfinite(value) || value < 0 || value > 100 || std::floor(value) != value) {
+      return false;
+    }
+  }
+  return static_cast<int>(pps["minSpeed"]) <= static_cast<int>(pps["maxSpeed"]);
+}
 
 static bool jsonTypeInvalid(JSONVar root, String validType) {
   String type = JSON.typeof_(root);
@@ -425,6 +446,39 @@ void Configuration::emptySatellites() {
   }
   _satellitesEnabled = false;
   logInfo("no satellites configured");
+}
+
+bool Configuration::updatePps(JSONVar &json) {
+  if (!json.hasOwnProperty(jprop_pps)) {
+    if (jconfig.hasOwnProperty(jprop_pps)) {
+      jconfig[jprop_pps] = undefined;
+      logInfo("no PPS configured");
+      return true;
+    }
+    return false;
+  }
+
+  JSONVar pps = json[jprop_pps];
+  if (!isValidPpsConfig(pps)) {
+    if (JSON.typeof_(pps) != "object") {
+      logError(jsonTypeInvalidMessage(String(jprop_pps), "object"));
+    } else {
+      logError(jsonValueInvalidMessage(String(jprop_pps), JSON.stringify(pps)));
+    }
+    return false;
+  }
+
+  PpsConfig previous{};
+  if (getPpsConfig(previous) && previous.minSpeed == static_cast<int>(pps["minSpeed"]) &&
+      previous.maxSpeed == static_cast<int>(pps["maxSpeed"]) &&
+      previous.active == static_cast<bool>(pps["active"])) {
+    return false;
+  }
+
+  // Deep copy PPS from root to jconfig, so it will be saved later.
+  jconfig[jprop_pps] = pps;
+  logInfo("PPS configuration updated");
+  return true;
 }
 
 /**
@@ -991,6 +1045,11 @@ bool Configuration::parse(String data, bool isLocal) {
   if (isLocal == false) {
     // Check for satellites
     if (updateSatellites(root)) {
+      changed = true;
+    }
+
+    // Check for PPS
+    if (updatePps(root)) {
       changed = true;
     }
   }
@@ -1746,6 +1805,16 @@ void Configuration::toConfig(const char *buf) {
   /// Load correction from saved config
   updateTempHumCorrection(jconfig, rhumCorrection, jprop_rhum);
 
+  // Invalid saved PPS settings are removed instead of receiving defaults.
+  if (jconfig.hasOwnProperty(jprop_pps)) {
+    JSONVar pps = jconfig[jprop_pps];
+    if (!isValidPpsConfig(pps)) {
+      logInfo("toConfig: invalid PPS configuration removed");
+      jconfig[jprop_pps] = undefined;
+      changed = true;
+    }
+  }
+
   // Validate cellOperators (string)
   if (JSON.typeof_(jconfig[jprop_cellOperators]) != "string" &&
       JSON.typeof_(jconfig[jprop_cellOperators]) != "undefined") {
@@ -1916,6 +1985,17 @@ bool Configuration::isSatellitesChanged(void) {
 bool Configuration::isSatellitesEnabled(void) { return _satellitesEnabled; }
 
 const String *Configuration::getSatellites() const { return _satellites; }
+
+bool Configuration::getPpsConfig(PpsConfig &config) {
+  if (!jconfig.hasOwnProperty(jprop_pps)) {
+    return false;
+  }
+  JSONVar pps = jconfig[jprop_pps];
+  config.minSpeed = static_cast<int>(pps["minSpeed"]);
+  config.maxSpeed = static_cast<int>(pps["maxSpeed"]);
+  config.active = static_cast<bool>(pps["active"]);
+  return true;
+}
 
 String Configuration::getCellOperators(void) {
   if (JSON.typeof_(jconfig[jprop_cellOperators]) != "string") {

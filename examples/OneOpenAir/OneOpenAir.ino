@@ -244,8 +244,11 @@ void setup() {
 
   Wire.beginTransmission(FAN_CONTROLLER_I2C_ADDRESS);
   if (Wire.endTransmission() == 0x00) {
+    Configuration::PpsConfig pps{};
+    configuration.getPpsConfig(pps);
     fanController = new FanController(Wire);
-    if (fanController != nullptr && fanController->begin()) {
+    if (fanController != nullptr &&
+        fanController->begin(pps.active, pps.minSpeed, pps.maxSpeed)) {
       Serial.printf("EMC230x detected at 0x%02X (product 0x%02X)\n", FAN_CONTROLLER_I2C_ADDRESS,
                     fanController->getProductID());
       Serial.printf("Initial fan PWM: %u%%\n", fanController->getSpeedPercent());
@@ -398,7 +401,7 @@ void loop() {
       configuration.hasSensorSPS30_1 || configuration.hasSensorSPS30_2) {
     pmsSchedule.run();
   }
-  if (fanController != nullptr && fanController->isActive()) {
+  if (fanController != nullptr && fanController->isReady()) {
     fanControllerSchedule.run();
   }
   if (ag->isOne()) {
@@ -1435,6 +1438,13 @@ static void configUpdateHandle() {
     return;
   }
 
+  if (fanController != nullptr && fanController->isReady()) {
+    Configuration::PpsConfig pps{};
+    configuration.getPpsConfig(pps);
+    fanController->setConfig(pps.active, pps.minSpeed, pps.maxSpeed);
+    fanControllerUpdate();
+  }
+
   String mqttUri = configuration.getMqttBrokerUri();
   if (mqttClient.isCurrentUri(mqttUri) == false) {
     mqttClient.end();
@@ -1792,7 +1802,7 @@ void postUsingWifi() {
 
   int fanSpeedPercent = -1;
   int fanRpm = -1;
-  if (fanController != nullptr && fanController->isActive()) {
+  if (fanController != nullptr && fanController->isReady()) {
     fanSpeedPercent = fanController->getSpeedPercent();
     fanRpm = fanController->getActualRPM();
   }
