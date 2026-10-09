@@ -571,13 +571,13 @@ static void fanControllerUpdate(void) {
     return;
   }
 
-  const int tachCount = fanController->getTachCount();
-  if (tachCount >= 0) {
-    Serial.printf("Fan PWM: %u%%, TACH=%d, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
-                  fanController->getSpeedPercent(), tachCount, pm25, hasPm25 ? "valid" : "invalid",
+  const int fanRpm = fanController->getActualRPM();
+  if (fanRpm >= 0) {
+    Serial.printf("Fan PWM: %u%%, RPM=%d, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
+                  fanController->getSpeedPercent(), fanRpm, pm25, hasPm25 ? "valid" : "invalid",
                   co2, hasCo2 ? "valid" : "invalid");
   } else {
-    Serial.printf("Fan PWM: %u%%, TACH=invalid, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
+    Serial.printf("Fan PWM: %u%%, RPM=invalid, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
                   fanController->getSpeedPercent(), pm25, hasPm25 ? "valid" : "invalid", co2,
                   hasCo2 ? "valid" : "invalid");
   }
@@ -1791,14 +1791,14 @@ void postUsingWifi() {
   measurements.setBootCount(bootCount);
 
   int fanSpeedPercent = -1;
-  int tachCount = -1;
+  int fanRpm = -1;
   if (fanController != nullptr && fanController->isActive()) {
     fanSpeedPercent = fanController->getSpeedPercent();
-    tachCount = fanController->getTachCount();
+    fanRpm = fanController->getActualRPM();
   }
 
   String payload =
-      measurements.toString(false, fwMode, wifiConnector.RSSI(), fanSpeedPercent, tachCount);
+      measurements.toString(false, fwMode, wifiConnector.RSSI(), fanSpeedPercent, fanRpm);
   if (agClient->httpPostMeasures(payload.c_str()) == false) {
     Serial.println();
     Serial.println("Online mode and isPostToAirGradient = true");

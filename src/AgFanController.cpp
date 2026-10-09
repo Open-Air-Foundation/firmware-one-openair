@@ -64,12 +64,12 @@ bool FanController::isActive(void) const { return active; }
 
 uint8_t FanController::getSpeedPercent(void) const { return speedPercent; }
 
-int FanController::getTachCount(void) {
-  const uint16_t tachCount = emc230x.getTachCount(FAN_CONTROLLER_CHANNEL);
-  if (tachCount == 0 || tachCount >= 0x1FFF) {
+int FanController::getActualRPM(void) {
+  const uint16_t rpm = emc230x.getActualRPM(FAN_CONTROLLER_CHANNEL);
+  if (rpm == 0) {
     return -1;
   }
-  return tachCount;
+  return rpm;
 }
 
 uint8_t FanController::getProductID(void) const { return productId; }

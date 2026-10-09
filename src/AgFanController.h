@@ -28,7 +28,7 @@ public:
 
   bool isActive(void) const;
   uint8_t getSpeedPercent(void) const;
-  int getTachCount(void);
+  int getActualRPM(void);
   uint8_t getProductID(void) const;
 
 private:

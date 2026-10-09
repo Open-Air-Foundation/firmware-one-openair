@@ -949,7 +949,7 @@ int Measurements::avgCount(float a, float b) {
 }
 
 String Measurements::toString(bool localServer, AgFirmwareMode fwMode, int rssi,
-                              int fanSpeedPercent, int tachCount) {
+                              int fanSpeedPercent, int fanRpm) {
   JSONVar root;
 
   if (ag->isOne() || (ag->isPro4_2()) || ag->isPro3_3() || ag->isBasic()) {
@@ -985,8 +985,9 @@ String Measurements::toString(bool localServer, AgFirmwareMode fwMode, int rssi,
   if (fanSpeedPercent >= 0) {
     root["fan"] = fanSpeedPercent;
   }
-  if (tachCount >= 0) {
-    root["tacho"] = tachCount;
+  if (fanRpm >= 0) {
+    // Keep the server field name; the value is measured fan RPM.
+    root["tacho"] = fanRpm;
   }
 
   if (localServer) {
