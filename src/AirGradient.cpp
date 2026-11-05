@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #else
 #include "WiFi.h"
+#include "esp_mac.h"
 #endif
 
 AirGradient::AirGradient(BoardType type)
@@ -78,8 +79,20 @@ bool AirGradient::isPro3_3(void) {
 bool AirGradient::isBasic(void) { return boardType == BoardType::DIY_BASIC; }
 
 String AirGradient::deviceId(void) {
+#ifdef ESP32
+  // Read the station MAC from eFuse. On arduino-esp32 3.x WiFi.macAddress()
+  // returns 00:00:00:00:00:00 until WiFi is started, and the ID is needed
+  // before that. esp_read_mac() gives the same value on core 2.x and 3.x.
+  uint8_t mac[6] = {0};
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char id[13];
+  snprintf(id, sizeof(id), "%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4],
+           mac[5]);
+  return String(id);
+#else
   String mac = WiFi.macAddress();
   mac.replace(":", "");
   mac.toLowerCase();
   return mac;
+#endif
 }

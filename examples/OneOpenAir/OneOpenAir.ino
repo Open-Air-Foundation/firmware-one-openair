@@ -201,6 +201,14 @@ AgSchedule printMeasurementsSchedule(6000, printMeasurements);
 void setup() {
   /** Serial for print debug message */
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // USB Serial: if a PC is attached but nothing reads the port, a write blocks until the TX timeout expires.
+  // arduino-esp32 3.x retries up to 20x the timeout (2.x waits 1x),
+  // so the default 100 ms becomes ~2 s per write and stalls loop():
+  // the display updates slowly and button presses are missed.
+  Serial.setTxTimeoutMs(0);
+#endif
+
   delay(100); /** For bester show log */
   mainTaskHandle = xTaskGetCurrentTaskHandle();
   hardwareIdentity.begin();
