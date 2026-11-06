@@ -4,13 +4,26 @@
 
 Arduino IDE version 2.x ([download](https://www.arduino.cc/en/software))
 
-> For AirGradient model ONE and Open Air, the codebase **WILL NOT** work on the latest major version of arduino-esp32 which is *3.x* . This related to when installing "esp32 by Espressif Systems" in board manager. Instead use version **2.0.17**, please follow the first step carefully.
+> For AirGradient model ONE and Open Air, install "esp32 by Espressif Systems" version **3.3.12** in board manager. This is the arduino-esp32 version used by PlatformIO `espressif32@8.0.0` for release builds. Please follow the first step carefully.
 
 ## Steps for ESP32C3 based board (ONE and Open Air Model)
 
-1. Install "esp32 by Espressif Systems" in board manager with version **2.0.17** (Tools ➝ Board ➝ Boards Manager ➝ search for `"espressif"`)
+1. Install "esp32 by Espressif Systems" in board manager with version **3.3.12** (Tools ➝ Board ➝ Boards Manager ➝ search for `"espressif"`)
 
 ![board manager](images/esp32-board.png)
+
+Then turn off C++ exceptions for ESP32-C3, as the PlatformIO build does. With exceptions on, the sketch does not fit the app partition. Create a file named `boards.local.txt` next to `boards.txt` of the installed core, with this line:
+
+```
+esp32c3.build.defines=-fno-exceptions
+```
+
+The core folder is:
+- Windows: `%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32\3.3.12`
+- macOS: `~/Library/Arduino15/packages/esp32/hardware/esp32/3.3.12`
+- Linux: `~/.arduino15/packages/esp32/hardware/esp32/3.3.12`
+
+Restart Arduino IDE after creating the file.
 
 2. Install AirGradient library
 
@@ -47,7 +60,7 @@ Flash Frequency ➝ 80MHz
 Flash Mode ➝ QIO
 Flash Size ➝ 4MB (32Mb)
 JTAG Adapter ➝ Disabled
-Partition Scheme ➝ Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)
+Partition Scheme ➝ Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)
 Upload Speed ➝ 921600
 ```
 
@@ -81,6 +94,14 @@ Upload Speed ➝ 921600
 
 ## Possible Issues
 
+### Sketch too big (ESP32-C3)
+
+`Sketch too big` or `Compilation error: text section exceeds available space in board` when compiling OneOpenAir.
+
+![Sketch too big](images/esp32-sketch-too-big.png)
+
+C++ exceptions are on, so the sketch is larger than the app partition. Create `boards.local.txt` as described in step 1 of the ESP32C3 steps, restart Arduino IDE and compile again. Also check that Partition Scheme is `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` and Core Debug Level is `Info` or lower.
+
 ### Linux (Debian)
 
 ModuleNotFoundError: No module named ‘serial’
@@ -107,5 +128,5 @@ Please follow github [contributing to a project](https://docs.github.com/en/get-
 
 There are 2 environment options to compile this project, PlatformIO and ArduinoIDE.
 
-- For PlatformIO, it should work out of the box
+- For PlatformIO, it should work out of the box. `platformio.ini` pins `espressif32@8.0.0` (arduino-esp32 3.3.12). Build with `pio run -e esp32-c3`, or `pio run -e esp32-c3-windows` on Windows. The build prints `Image: <size> bytes of <slot> app partition` and fails when `firmware.bin` does not fit the app partition.
 - For arduino, files in `src` folder and also from `Examples` can be modified at `Documents/Arduino/libraries` for Windows and Mac, and `~/Arduino/Libraries` for Linux

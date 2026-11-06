@@ -32,9 +32,12 @@ bool MqttClient::begin(String uri) {
 
 #ifdef ESP32
   /** config esp_mqtt client */
-  esp_mqtt_client_config_t config = {
-      .uri = this->uri.c_str(),
-  };
+  esp_mqtt_client_config_t config = {};
+#if ESP_IDF_VERSION_MAJOR >= 5
+  config.broker.address.uri = this->uri.c_str();
+#else
+  config.uri = this->uri.c_str();
+#endif
 
   /** init client */
   client = esp_mqtt_client_init(&config);
