@@ -1,8 +1,7 @@
 """Fail the build when firmware.bin does not fit the smallest app partition.
 
-PlatformIO's own size check sums ELF sections and leaves out .eh_frame, which
-esptool still writes into the image. On arduino-esp32 3.x that hides about
-58 KB, so a build can report SUCCESS with an image the bootloader rejects.
+The check uses the size of firmware.bin. PlatformIO's own size report sums ELF
+sections and leaves out .eh_frame, which esptool still writes into the image.
 """
 
 import csv
