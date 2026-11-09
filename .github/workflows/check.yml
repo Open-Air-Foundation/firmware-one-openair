@@ -91,8 +91,6 @@ jobs:
             - none
             - --build-property
             - compiler.cpp.extra_flags=-DARDUINOJSON_ENABLE_PROGMEM=0
-            - --build-property
-            - build.defines=-fno-exceptions
             - --board-options
             - "${{ matrix.board_options }}"
           platforms: |

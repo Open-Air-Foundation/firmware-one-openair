@@ -12,19 +12,6 @@ Arduino IDE version 2.x ([download](https://www.arduino.cc/en/software))
 
 ![board manager](images/esp32-board.png)
 
-Then turn off C++ exceptions for ESP32-C3, as the PlatformIO build does. With exceptions on, the sketch does not fit the app partition. Create a file named `boards.local.txt` next to `boards.txt` of the installed core, with this line:
-
-```
-esp32c3.build.defines=-fno-exceptions
-```
-
-The core folder is:
-- Windows: `%LOCALAPPDATA%\Arduino15\packages\esp32\hardware\esp32\3.3.12`
-- macOS: `~/Library/Arduino15/packages/esp32/hardware/esp32/3.3.12`
-- Linux: `~/.arduino15/packages/esp32/hardware/esp32/3.3.12`
-
-Restart Arduino IDE after creating the file.
-
 2. Install AirGradient library
 
 #### Version < 3.2.0
@@ -100,7 +87,7 @@ Upload Speed ➝ 921600
 
 ![Sketch too big](images/esp32-sketch-too-big.png)
 
-C++ exceptions are on, so the sketch is larger than the app partition. Create `boards.local.txt` as described in step 1 of the ESP32C3 steps, restart Arduino IDE and compile again. Also check that Partition Scheme is `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` and Core Debug Level is `Info` or lower.
+The sketch is larger than the app partition. The OneOpenAir folder contains `build_opt.h`, which turns off C++ exceptions so the sketch fits. Compile the sketch from that folder with `build_opt.h` next to `OneOpenAir.ino`, and check that Partition Scheme is `Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)` and Core Debug Level is `Info` or lower.
 
 ### Linux (Debian)
 
