@@ -53,9 +53,9 @@ jobs:
             core_url: "https://arduino.esp8266.com/stable/package_esp8266com_index.json"
           - fqbn: "esp32:esp32:esp32c3"
             core: "esp32:esp32"
-            core_version: "2.0.17"
+            core_version: "3.3.12"
             core_url: "https://espressif.github.io/arduino-esp32/package_esp32_index.json"
-            board_options: "JTAGAdapter=default,CDCOnBoot=cdc,PartitionScheme=min_spiffs,CPUFreq=160,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600,DebugLevel=verbose,EraseFlash=none"
+            board_options: "JTAGAdapter=default,CDCOnBoot=cdc,PartitionScheme=min_spiffs,CPUFreq=160,FlashMode=qio,FlashFreq=80,FlashSize=4M,UploadSpeed=921600,DebugLevel=info,EraseFlash=none"
         exclude:
           - example: "BASIC"
             fqbn: "esp32:esp32:esp32c3"

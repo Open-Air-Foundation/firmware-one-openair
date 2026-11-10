@@ -201,6 +201,12 @@ AgSchedule printMeasurementsSchedule(6000, printMeasurements);
 void setup() {
   /** Serial for print debug message */
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+  // USB Serial writes never wait. With a PC attached and nothing reading the port, a waiting
+  // write would stall loop(), so the display and button would stop responding.
+  Serial.setTxTimeoutMs(0);
+#endif
+
   delay(100); /** For bester show log */
   mainTaskHandle = xTaskGetCurrentTaskHandle();
   hardwareIdentity.begin();

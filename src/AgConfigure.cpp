@@ -1,5 +1,5 @@
 #include "AgConfigure.h"
-#if ESP32
+#ifdef ESP32
 #include "FS.h"
 #include "SPIFFS.h"
 #else

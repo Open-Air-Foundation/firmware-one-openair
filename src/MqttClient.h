@@ -2,6 +2,7 @@
 #define _AG_MQTT_CLIENT_H_
 
 #ifdef ESP32
+#include "esp_idf_version.h"
 #include "mqtt_client.h"
 #else
 #include <WiFiClient.h>
