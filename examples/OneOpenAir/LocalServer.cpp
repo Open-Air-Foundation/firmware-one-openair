@@ -22,7 +22,7 @@ bool LocalServer::begin(void) {
               localServer->_handle();
             }
           },
-          "webserver", 1024 * 5, this, 5, NULL) != pdTRUE) {
+          "webserver", 1024 * 8, this, 5, NULL) != pdTRUE) {
     Serial.println("Create task handle webserver failed");
   }
   logInfo("Init: " + getHostname() + ".local");
