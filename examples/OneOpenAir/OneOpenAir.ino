@@ -57,6 +57,8 @@ CC BY-SA 4.0 Attribution-ShareAlike 4.0 International License
 #include <cstdint>
 #include <string>
 
+#include "Py32Updater.h"
+
 #include "Libraries/airgradient-client/src/agSerial.h"
 #include "Libraries/airgradient-client/src/cellularModule.h"
 #include "Libraries/airgradient-client/src/cellularModuleA7672xx.h"
@@ -122,7 +124,11 @@ static AgSerial *agSerial;
 static CellularModule *cellularCard;
 static AirgradientClient *agClient;
 
-enum NetworkOption { UseWifi, UseCellular };
+enum NetworkOption
+{
+  UseWifi,
+  UseCellular
+};
 NetworkOption networkOption;
 static TaskHandle_t mainTaskHandle = NULL;
 TaskHandle_t handleNetworkTask = NULL;
@@ -160,6 +166,7 @@ static void tempHumUpdate(void);
 static void co2Update(void);
 static void fanControllerUpdate(void);
 static void printMeasurements();
+static void readNoiseModule();
 static void mdnsInit(void);
 static void createMqttTask(void);
 static void initMqtt(void);
@@ -197,8 +204,10 @@ AgSchedule watchdogFeedSchedule(60000, wdgFeedUpdate);
 AgSchedule checkForUpdateSchedule(FIRMWARE_CHECK_FOR_UPDATE_MS, checkForFirmwareUpdate);
 AgSchedule networkSignalCheckSchedule(10000, networkSignalCheck);
 AgSchedule printMeasurementsSchedule(6000, printMeasurements);
+AgSchedule noiseModuleSchedule(1000, readNoiseModule);
 
-void setup() {
+void setup()
+{
   /** Serial for print debug message */
   Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -227,10 +236,16 @@ void setup() {
   Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
   delay(1000);
 
+#if defined(PY32_UPDATE_ON_BOOT_TEST) && PY32_UPDATE_ON_BOOT_TEST
+  const bool ok = Py32Updater::update(8);
+  Serial.println(ok ? "PY32_UPDATE_FINISHED" : "PY32_UPDATE_FAILED");
+#endif
+
   /** Detect board type from eFuse, OLED, or persisted model. */
   Wire.beginTransmission(OLED_I2C_ADDR);
   oledDetected = Wire.endTransmission() == 0x00;
   ag = new AirGradient(getBoardType());
+  Serial.printf("ESP reset reason: %d\n", static_cast<int>(reason));
   Serial.println("Detected " + ag->getBoardName());
   Serial.printf("Board selection: eFuse=%s (0x%02X), OLED=%s, model=%s, "
                 "selected=%s\n",
@@ -250,26 +265,33 @@ void setup() {
   measurements.setAirGradient(ag);
 
   Wire.beginTransmission(FAN_CONTROLLER_I2C_ADDRESS);
-  if (Wire.endTransmission() == 0x00) {
+  if (Wire.endTransmission() == 0x00)
+  {
     Configuration::PpsConfig pps{};
     configuration.getPpsConfig(pps);
     fanController = new FanController(Wire);
     if (fanController != nullptr &&
-        fanController->begin(pps.active, pps.minSpeed, pps.maxSpeed)) {
+        fanController->begin(pps.active, pps.minSpeed, pps.maxSpeed))
+    {
       Serial.printf("EMC230x detected at 0x%02X (product 0x%02X)\n", FAN_CONTROLLER_I2C_ADDRESS,
                     fanController->getProductID());
       Serial.printf("Initial fan PWM: %u%%\n", fanController->getSpeedPercent());
-    } else {
+    }
+    else
+    {
       Serial.printf("EMC230x initialization failed at 0x%02X\n", FAN_CONTROLLER_I2C_ADDRESS);
       delete fanController;
       fanController = nullptr;
     }
-  } else {
+  }
+  else
+  {
     Serial.printf("EMC230x not detected at 0x%02X; fan control disabled\n",
                   FAN_CONTROLLER_I2C_ADDRESS);
   }
 
-  if (configuration.isSatellitesEnabled()) {
+  if (configuration.isSatellitesEnabled())
+  {
     satellites = new AgSatellites(measurements, configuration);
     measurements.setSatellites(satellites);
     Serial.println("Satellites enabled on boot");
@@ -278,17 +300,23 @@ void setup() {
   /** Init sensor */
   boardInit();
   setMeasurementMaxPeriod();
+  Serial.printf("Boot: board and sensor initialization complete (ESP reset reason: %d)\n",
+                static_cast<int>(reason));
 
   bool connectToNetwork = true;
-  if (ag->isOne()) { // Offline mode only available for indoor monitor
+  if (ag->isOne())
+  { // Offline mode only available for indoor monitor
     /** Show message confirm offline mode, should me perform if LED bar button
      * test pressed */
-    if (ledBarButtonTest == false) {
+    if (ledBarButtonTest == false)
+    {
       oledDisplay.setText("Press now for",
                           configuration.isOfflineMode() ? "online mode" : "offline mode", "");
       uint32_t startTime = millis();
-      while (true) {
-        if (ag->button.getState() == ag->button.BUTTON_PRESSED) {
+      while (true)
+      {
+        if (ag->button.getState() == ag->button.BUTTON_PRESSED)
+        {
           configuration.setOfflineMode(!configuration.isOfflineMode());
 
           oledDisplay.setText("Offline Mode",
@@ -297,38 +325,49 @@ void setup() {
           break;
         }
         uint32_t periodMs = (uint32_t)(millis() - startTime);
-        if (periodMs >= 3000) {
+        if (periodMs >= 3000)
+        {
           break;
         }
       }
       connectToNetwork = !configuration.isOfflineMode();
-    } else {
+    }
+    else
+    {
       configuration.setOfflineModeWithoutSave(true);
       connectToNetwork = false;
     }
   }
 
   // Initialize networking configuration
-  if (connectToNetwork) {
+  if (connectToNetwork)
+  {
+    Serial.println("Boot: starting serial command task");
     BaseType_t xReturned =
         xTaskCreate(serialCommandTask, "SerialCommandTask", 8192, nullptr, 5, &handleSerialTask);
-    if (xReturned == pdPASS) {
+    if (xReturned == pdPASS)
+    {
       Serial.onEvent(ARDUINO_HW_CDC_RX_EVENT,
-                     [](void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData) {
+                     [](void *arg, esp_event_base_t eventBase, int32_t eventId, void *eventData)
+                     {
                        xTaskNotifyGive(handleSerialTask);
                      });
       // Process any bytes received before the callback was registered.
       xTaskNotifyGive(handleSerialTask);
-    } else {
+    }
+    else
+    {
       Serial.println("Failed to create serial command task");
     }
     oledDisplay.setText("Initialize", "network...", "");
     initializeNetwork();
+    Serial.println("Boot: network initialization returned");
     wifiConnector.stopBLE();
   }
 
   /** Show display Warning up */
-  if (ag->isOne()) {
+  if (ag->isOne())
+  {
     oledDisplay.setText("Warming Up", "Serial Number:", ag->deviceId().c_str());
     delay(DISPLAY_DELAY_SHOW_CONTENT_MS);
 
@@ -337,7 +376,8 @@ void setup() {
     delay(DISPLAY_DELAY_SHOW_CONTENT_MS);
   }
 
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     // If using cellular re-set scheduler interval
     configSchedule.setPeriod(CELLULAR_SERVER_CONFIG_SYNC_INTERVAL);
     transmissionSchedule.setPeriod(CELLULAR_TRANSMISSION_INTERVAL);
@@ -349,26 +389,35 @@ void setup() {
   }
 
   // Only run network task if monitor is not in offline mode
-  if (configuration.isOfflineMode() == false) {
+  if (configuration.isOfflineMode() == false)
+  {
     BaseType_t xReturned =
         xTaskCreate(networkingTask, "NetworkingTask", 8192, null, 5, &handleNetworkTask);
-    if (xReturned == pdPASS) {
+    if (xReturned == pdPASS)
+    {
       Serial.println("Success create networking task");
-    } else {
+    }
+    else
+    {
       assert("Failed to create networking task");
     }
   }
 
   // Log monitor mode for debugging purpose
-  if (configuration.isOfflineMode()) {
+  if (configuration.isOfflineMode())
+  {
     Serial.println("Running monitor in offline mode");
-  } else if (configuration.isCloudConnectionDisabled()) {
+  }
+  else if (configuration.isCloudConnectionDisabled())
+  {
     Serial.println("Running monitor without connection to AirGradient server");
   }
 }
 
-void loop() {
-  if (networkOption == UseCellular) {
+void loop()
+{
+  if (networkOption == UseCellular)
+  {
     // Check if cellular client not ready until certain time
     // Redundant check in both task to make sure its executed
     restartIfCeClientIssueOverTwoHours();
@@ -377,16 +426,19 @@ void loop() {
   // Schedule to feed external watchdog
   watchdogFeedSchedule.run();
 
-  if (firmwareUpdateInProgress) {
+  if (firmwareUpdateInProgress)
+  {
     // Firmare update currently in progress, temporarily disable running sensor schedules
     delay(10000);
     return;
   }
 
-  if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
+  if (ulTaskNotifyTake(pdTRUE, 0) > 0)
+  {
     Serial.printf("Rebooting in %u ms to apply hardware board selection\n",
                   BOARD_SELECTION_REBOOT_DELAY_MS);
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.setText("Hardware changed", "Rebooting...", "");
     }
     delay(BOARD_SELECTION_REBOOT_DELAY_MS);
@@ -396,69 +448,89 @@ void loop() {
   // Schedule to update display and led
   dispLedSchedule.run();
 
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     // Queue now only applied for cellular
     measurementSchedule.run();
   }
 
-  if (configuration.hasSensorS8) {
+  if (configuration.hasSensorS8)
+  {
     co2Schedule.run();
   }
   if (configuration.hasSensorPMS1 || configuration.hasSensorPMS2 ||
-      configuration.hasSensorSPS30_1 || configuration.hasSensorSPS30_2) {
+      configuration.hasSensorSPS30_1 || configuration.hasSensorSPS30_2)
+  {
     pmsSchedule.run();
   }
-  if (fanController != nullptr && fanController->isReady()) {
+  if (fanController != nullptr && fanController->isReady())
+  {
     fanControllerSchedule.run();
   }
-  if (ag->isOne()) {
-    if (configuration.hasSensorSHT) {
+  if (ag->isOne())
+  {
+    if (configuration.hasSensorSHT)
+    {
       tempHumSchedule.run();
     }
   }
-  if (configuration.hasSensorSGP) {
+  if (configuration.hasSensorSGP)
+  {
     tvocSchedule.run();
   }
-  if (ag->isOne()) {
-    if (configuration.hasSensorPMS1) {
+  if (ag->isOne())
+  {
+    if (configuration.hasSensorPMS1)
+    {
       ag->pms5003.handle();
       static bool pmsConnected = false;
-      if (pmsConnected != ag->pms5003.connected()) {
+      if (pmsConnected != ag->pms5003.connected())
+      {
         pmsConnected = ag->pms5003.connected();
         Serial.printf("PMS sensor %s \n", pmsConnected ? "connected" : "removed");
       }
     }
-  } else {
-    if (configuration.hasSensorPMS1) {
+  }
+  else
+  {
+    if (configuration.hasSensorPMS1)
+    {
       ag->pms5003t_1.handle();
     }
-    if (configuration.hasSensorPMS2) {
+    if (configuration.hasSensorPMS2)
+    {
       ag->pms5003t_2.handle();
     }
   }
 
   /* Run satellite BLE scanning */
-  if (satellites != nullptr) {
+  if (satellites != nullptr)
+  {
     satellites->run();
   }
 
   /* Run measurement schedule */
   printMeasurementsSchedule.run();
+  noiseModuleSchedule.run();
 
   /** factory reset handle */
   factoryConfigReset();
 
-  if (configuration.isCommandRequested()) {
+  if (configuration.isCommandRequested())
+  {
     // Each state machine already has an independent request command check
     stateMachine.executeCo2Calibration();
     stateMachine.executeLedBarTest();
   }
 }
 
-static void serialCommandTask(void *args) {
-  while (1) {
+static void serialCommandTask(void *args)
+{
+  while (1)
+  {
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    do {
+    do
+    {
       serialCommands.run();
       vTaskDelay(1);
     } while (Serial.available() > 0);
@@ -466,12 +538,14 @@ static void serialCommandTask(void *args) {
 }
 
 static void serialCommandHandle(const AgSerialCommands::Request &request, char *response,
-                                size_t size) {
+                                size_t size)
+{
   using Command = AgSerialCommands::Command;
   const char *target = AgSerialCommands::targetName(request.target);
   float scale = request.scale;
   float intercept = request.intercept;
-  switch (request.command) {
+  switch (request.command)
+  {
   case Command::Help:
     snprintf(response, size,
              "OK COMMANDS HELP GET_SERIAL SET_SLR <PM|TEMP|HUM> <scale> <intercept> "
@@ -481,26 +555,32 @@ static void serialCommandHandle(const AgSerialCommands::Request &request, char *
     snprintf(response, size, "OK SERIAL %s", ag->deviceId().c_str());
     return;
   case Command::SetSlr:
-    if (!configuration.setSlrCorrection(target, scale, intercept)) {
+    if (!configuration.setSlrCorrection(target, scale, intercept))
+    {
       snprintf(response, size, "ERROR OPERATION_FAILED");
       return;
     }
     break;
   case Command::GetSlr:
-    if (request.target == AgSerialCommands::Target::PM) {
+    if (request.target == AgSerialCommands::Target::PM)
+    {
       const auto correction = configuration.getPMCorrection();
       if (correction.algorithm != COR_ALGO_PM_SLR_FACTORY_CALIBRATION &&
-          correction.algorithm != COR_ALGO_PM_SLR_CUSTOM) {
+          correction.algorithm != COR_ALGO_PM_SLR_CUSTOM)
+      {
         snprintf(response, size, "ERROR SLR_NOT_SET");
         return;
       }
       scale = correction.scalingFactor;
       intercept = correction.intercept;
-    } else {
+    }
+    else
+    {
       const auto correction = request.target == AgSerialCommands::Target::Temperature
                                   ? configuration.getTempCorrection()
                                   : configuration.getHumCorrection();
-      if (correction.algorithm != COR_ALGO_TEMP_HUM_SLR_CUSTOM) {
+      if (correction.algorithm != COR_ALGO_TEMP_HUM_SLR_CUSTOM)
+      {
         snprintf(response, size, "ERROR SLR_NOT_SET");
         return;
       }
@@ -508,10 +588,12 @@ static void serialCommandHandle(const AgSerialCommands::Request &request, char *
       intercept = correction.intercept;
     }
     break;
-  case Command::FactoryReset: {
+  case Command::FactoryReset:
+  {
     serialResetRequested = true;
     const bool success = configuration.resetKeepingCorrections();
-    if (success) {
+    if (success)
+    {
       configUpdateHandle();
     }
     serialResetRequested = false;
@@ -522,51 +604,64 @@ static void serialCommandHandle(const AgSerialCommands::Request &request, char *
   snprintf(response, size, "OK SLR %s %.6f %.6f", target, scale, intercept);
 }
 
-static void co2Update(void) {
-  if (!configuration.hasSensorS8) {
+static void co2Update(void)
+{
+  if (!configuration.hasSensorS8)
+  {
     // Device don't have S8 sensor
     return;
   }
 
   int value = ag->s8.getCo2();
-  if (utils::isValidCO2(value)) {
+  if (utils::isValidCO2(value))
+  {
     measurements.update(Measurements::CO2, value);
-  } else {
+  }
+  else
+  {
     measurements.update(Measurements::CO2, utils::getInvalidCO2());
   }
 }
 
-static bool getCorrectedFanPm25(float &pm25Ugm3) {
+static bool getCorrectedFanPm25(float &pm25Ugm3)
+{
   const float rawPm25Ch1 = measurements.getAverage(Measurements::PM25, 1);
   const float rawPm25Ch2 = measurements.getAverage(Measurements::PM25, 2);
 
   float correctedPm25Ch1 = utils::getInvalidPmValue();
   float correctedPm25Ch2 = utils::getInvalidPmValue();
 
-  if (utils::isValidPm(rawPm25Ch1)) {
+  if (utils::isValidPm(rawPm25Ch1))
+  {
     correctedPm25Ch1 = measurements.getCorrectedPM25(true, 1);
   }
-  if (utils::isValidPm(rawPm25Ch2)) {
+  if (utils::isValidPm(rawPm25Ch2))
+  {
     correctedPm25Ch2 = measurements.getCorrectedPM25(true, 2);
   }
 
-  if (utils::isValidPm(correctedPm25Ch1) && utils::isValidPm(correctedPm25Ch2)) {
+  if (utils::isValidPm(correctedPm25Ch1) && utils::isValidPm(correctedPm25Ch2))
+  {
     pm25Ugm3 = (correctedPm25Ch1 + correctedPm25Ch2) / 2.0f;
     return true;
   }
-  if (utils::isValidPm(correctedPm25Ch1)) {
+  if (utils::isValidPm(correctedPm25Ch1))
+  {
     pm25Ugm3 = correctedPm25Ch1;
     return true;
   }
-  if (utils::isValidPm(correctedPm25Ch2)) {
+  if (utils::isValidPm(correctedPm25Ch2))
+  {
     pm25Ugm3 = correctedPm25Ch2;
     return true;
   }
   return false;
 }
 
-static void fanControllerUpdate(void) {
-  if (fanController == nullptr) {
+static void fanControllerUpdate(void)
+{
+  if (fanController == nullptr)
+  {
     return;
   }
 
@@ -576,17 +671,21 @@ static void fanControllerUpdate(void) {
   const float co2 = measurements.getAverage(Measurements::CO2);
   const bool hasCo2 = utils::isValidCO2(co2);
 
-  if (!fanController->update(pm25, hasPm25, co2, hasCo2)) {
+  if (!fanController->update(pm25, hasPm25, co2, hasCo2))
+  {
     Serial.println("Failed to update fan PWM");
     return;
   }
 
   const int fanRpm = fanController->getActualRPM();
-  if (fanRpm >= 0) {
+  if (fanRpm >= 0)
+  {
     Serial.printf("Fan PWM: %u%%, RPM=%d, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
                   fanController->getSpeedPercent(), fanRpm, pm25, hasPm25 ? "valid" : "invalid",
                   co2, hasCo2 ? "valid" : "invalid");
-  } else {
+  }
+  else
+  {
     Serial.printf("Fan PWM: %u%%, RPM=invalid, PM2.5=%.1f (%s), CO2=%.1f (%s)\n",
                   fanController->getSpeedPercent(), pm25, hasPm25 ? "valid" : "invalid", co2,
                   hasCo2 ? "valid" : "invalid");
@@ -595,8 +694,123 @@ static void fanControllerUpdate(void) {
 
 void printMeasurements() { measurements.printCurrentAverage(); }
 
-static void mdnsInit(void) {
-  if (!MDNS.begin(localServer.getHostname().c_str())) {
+static constexpr uint8_t NOISE_MODULE_ADDRESS = 0x42;
+
+static bool readNoiseRegister(uint8_t reg, uint8_t *data, size_t size)
+{
+  Wire.beginTransmission(NOISE_MODULE_ADDRESS);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0 ||
+      Wire.requestFrom(NOISE_MODULE_ADDRESS, size, true) != size)
+  {
+    return false;
+  }
+  for (size_t i = 0; i < size; ++i)
+  {
+    data[i] = Wire.read();
+  }
+  return true;
+}
+
+static bool sendNoiseCommand(uint8_t command)
+{
+  Wire.beginTransmission(NOISE_MODULE_ADDRESS);
+  Wire.write(0x80);
+  Wire.write(command);
+  return Wire.endTransmission() == 0;
+}
+
+static uint32_t decodeNoiseUint32(const uint8_t *data)
+{
+  return uint32_t(data[0]) | (uint32_t(data[1]) << 8) |
+         (uint32_t(data[2]) << 16) | (uint32_t(data[3]) << 24);
+}
+
+// Assign scalar values directly: JSONVar's move assignment does not
+// replace the child node created by report[key].
+static void setNoiseCount(JSONVar &report, const char *key, const uint8_t *data, double divisor)
+{
+  const uint32_t value = decodeNoiseUint32(data);
+  if (value == UINT32_MAX)
+    report[key] = nullptr;
+  else
+    report[key] = value / divisor;
+}
+
+static void setNoiseLevel(JSONVar &report, const char *key, const uint8_t *data)
+{
+  const uint16_t raw = uint16_t(data[0]) | (uint16_t(data[1]) << 8);
+  if (raw == 0x8000)
+  {
+    report[key] = nullptr;
+    return;
+  }
+  const int32_t value = raw >= 0x8000 ? int32_t(raw) - 65536 : raw;
+  report[key] = value / 10.0;
+}
+
+static void readNoiseModule()
+{
+  constexpr uint32_t reportIntervalMs = 60000;
+  constexpr uint8_t accumulating = 1;
+  constexpr uint8_t preparing = 2;
+  constexpr uint8_t ready = 3;
+  constexpr uint8_t prepareReport = 1;
+  constexpr uint8_t acknowledgeReport = 2;
+  static uint32_t lastPoll = 0;
+  static bool awaitingReport = false;
+  static bool reportLogged = false;
+
+  const uint32_t now = millis();
+  if (!awaitingReport && now - lastPoll < reportIntervalMs)
+  {
+    return;
+  }
+  lastPoll = now;
+
+  uint8_t header[2];
+  if (!readNoiseRegister(0x00, header, sizeof(header)) || header[0] != 1)
+  {
+    awaitingReport = false;
+    return;
+  }
+
+  if (header[1] != ready)
+  {
+    const bool shouldPrepare = header[1] == accumulating && !awaitingReport;
+    reportLogged = false;
+    awaitingReport = header[1] == preparing || (shouldPrepare && sendNoiseCommand(prepareReport));
+    return;
+  }
+
+  awaitingReport = true;
+  if (!reportLogged)
+  {
+    uint8_t payload[24];
+    if (!readNoiseRegister(0x10, payload, sizeof(payload)))
+    {
+      return;
+    }
+
+    JSONVar report;
+    setNoiseCount(report, "interval_seconds", payload, 1000.0);
+    setNoiseLevel(report, "laeq_db_a", payload + 4);
+    setNoiseLevel(report, "lafmax_db_a", payload + 6);
+    setNoiseCount(report, "above_60_db_a_seconds", payload + 8, 10.0);
+    setNoiseCount(report, "above_70_db_a_seconds", payload + 12, 10.0);
+    setNoiseCount(report, "above_80_db_a_seconds", payload + 16, 10.0);
+    setNoiseCount(report, "clipped_seconds", payload + 20, 100.0);
+    Serial.println("Noise: " + JSON.stringify(report));
+    reportLogged = true;
+  }
+  // Wait for the next status poll to confirm that the module processed the ACK.
+  sendNoiseCommand(acknowledgeReport);
+}
+
+static void mdnsInit(void)
+{
+  if (!MDNS.begin(localServer.getHostname().c_str()))
+  {
     Serial.println("Init mDNS failed");
     return;
   }
@@ -608,8 +822,10 @@ static void mdnsInit(void) {
   MDNS.addServiceTxt("_airgradient", "_tcp", "vendor", "AirGradient");
 }
 
-static void createMqttTask(void) {
-  if (mqttTask) {
+static void createMqttTask(void)
+{
+  if (mqttTask)
+  {
     vTaskDelete(mqttTask);
     mqttTask = NULL;
     Serial.println("Delete old MQTT task");
@@ -617,18 +833,24 @@ static void createMqttTask(void) {
 
   Serial.println("Create new MQTT task");
   xTaskCreate(
-      [](void *param) {
-        for (;;) {
+      [](void *param)
+      {
+        for (;;)
+        {
           delay(MQTT_SYNC_INTERVAL);
 
           /** Send data */
-          if (mqttClient.isConnected()) {
+          if (mqttClient.isConnected())
+          {
             String payload = measurements.toString(true, fwMode, wifiConnector.RSSI());
             String topic = "airgradient/readings/" + ag->deviceId();
 
-            if (mqttClient.publish(topic.c_str(), payload.c_str(), payload.length())) {
+            if (mqttClient.publish(topic.c_str(), payload.c_str(), payload.length()))
+            {
               Serial.println("MQTT sync success");
-            } else {
+            }
+            else
+            {
               Serial.println("MQTT sync failure");
             }
           }
@@ -636,59 +858,81 @@ static void createMqttTask(void) {
       },
       "mqtt-task", 1024 * 4, NULL, 6, &mqttTask);
 
-  if (mqttTask == NULL) {
+  if (mqttTask == NULL)
+  {
     Serial.println("Creat mqttTask failed");
   }
 }
 
-static void initMqtt(void) {
+static void initMqtt(void)
+{
   String mqttUri = configuration.getMqttBrokerUri();
-  if (mqttUri.isEmpty()) {
+  if (mqttUri.isEmpty())
+  {
     Serial.println("MQTT is not configured, skipping initialization of MQTT client");
     return;
   }
 
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     Serial.println("MQTT not available for cellular options");
     return;
   }
 
-  if (mqttClient.begin(mqttUri)) {
+  if (mqttClient.begin(mqttUri))
+  {
     Serial.println("Successfully connected to MQTT broker");
     createMqttTask();
-  } else {
+  }
+  else
+  {
     Serial.println("Connection to MQTT broker failed");
   }
 }
 
-static void factoryConfigReset(void) {
-  if (ag->button.getState() == ag->button.BUTTON_PRESSED) {
-    if (factoryBtnPressTime == 0) {
+static void factoryConfigReset(void)
+{
+  if (ag->button.getState() == ag->button.BUTTON_PRESSED)
+  {
+    if (factoryBtnPressTime == 0)
+    {
       factoryBtnPressTime = millis();
-    } else {
+    }
+    else
+    {
       uint32_t ms = (uint32_t)(millis() - factoryBtnPressTime);
-      if (ms >= 2000) {
+      if (ms >= 2000)
+      {
         // Show display message: For factory keep for x seconds
-        if (ag->isOne()) {
+        if (ag->isOne())
+        {
           oledDisplay.setText("Factory reset", "keep pressed", "for 8 sec");
-        } else {
+        }
+        else
+        {
           Serial.println("Factory reset, keep pressed for 8 sec");
         }
 
         int count = 7;
-        while (ag->button.getState() == ag->button.BUTTON_PRESSED) {
+        while (ag->button.getState() == ag->button.BUTTON_PRESSED)
+        {
           delay(1000);
-          if (ag->isOne()) {
+          if (ag->isOne())
+          {
 
             String str = "for " + String(count) + " sec";
             oledDisplay.setText("Factory reset", "keep pressed", str.c_str());
-          } else {
+          }
+          else
+          {
             Serial.printf("Factory reset, keep pressed for %d sec\r\n", count);
           }
           count--;
-          if (count == 0) {
+          if (count == 0)
+          {
             /** Stop MQTT task first */
-            if (mqttTask) {
+            if (mqttTask)
+            {
               vTaskDelete(mqttTask);
               mqttTask = NULL;
             }
@@ -699,9 +943,12 @@ static void factoryConfigReset(void) {
             /** Reset local config */
             configuration.reset();
 
-            if (ag->isOne()) {
+            if (ag->isOne())
+            {
               oledDisplay.setText("Factory reset", "successful", "");
-            } else {
+            }
+            else
+            {
               Serial.println("Factory reset successful");
             }
             delay(3000);
@@ -712,14 +959,19 @@ static void factoryConfigReset(void) {
 
         /** Show current content cause reset ignore */
         factoryBtnPressTime = 0;
-        if (ag->isOne()) {
+        if (ag->isOne())
+        {
           updateDisplayAndLedBar();
         }
       }
     }
-  } else {
-    if (factoryBtnPressTime != 0) {
-      if (ag->isOne()) {
+  }
+  else
+  {
+    if (factoryBtnPressTime != 0)
+    {
+      if (ag->isOne())
+      {
         /** Restore last display content */
         updateDisplayAndLedBar();
       }
@@ -728,18 +980,24 @@ static void factoryConfigReset(void) {
   }
 }
 
-static void wdgFeedUpdate(void) {
+static void wdgFeedUpdate(void)
+{
   ag->watchdog.reset();
   Serial.println("External watchdog feed!");
 }
 
-static void ledBarEnabledUpdate(void) {
-  if (ag->isOne()) {
+static void ledBarEnabledUpdate(void)
+{
+  if (ag->isOne())
+  {
     int brightness = configuration.getLedBarBrightness();
     Serial.println("LED bar brightness: " + String(brightness));
-    if ((brightness == 0) || (configuration.getLedBarMode() == LedBarModeOff)) {
+    if ((brightness == 0) || (configuration.getLedBarMode() == LedBarModeOff))
+    {
       ag->ledBar.setEnable(false);
-    } else {
+    }
+    else
+    {
       ag->ledBar.setBrightness(brightness);
       ag->ledBar.setEnable(configuration.getLedBarMode() != LedBarModeOff);
     }
@@ -747,30 +1005,39 @@ static void ledBarEnabledUpdate(void) {
   }
 }
 
-static bool sgp41Init(void) {
+static bool sgp41Init(void)
+{
   ag->sgp41.setNoxLearningOffset(configuration.getNoxLearningOffset());
   ag->sgp41.setTvocLearningOffset(configuration.getTvocLearningOffset());
-  if (ag->sgp41.begin(Wire)) {
+  if (ag->sgp41.begin(Wire))
+  {
     Serial.println("Init SGP41 success");
     configuration.hasSensorSGP = true;
     return true;
-  } else {
+  }
+  else
+  {
     Serial.println("Init SGP41 failure");
     configuration.hasSensorSGP = false;
   }
   return false;
 }
 
-void checkForFirmwareUpdate(void) {
-  if (configuration.isCloudConnectionDisabled()) {
+void checkForFirmwareUpdate(void)
+{
+  if (configuration.isCloudConnectionDisabled())
+  {
     Serial.println("Cloud connection is disabled, skip firmware update");
     return;
   }
 
   AirgradientOTA *agOta;
-  if (networkOption == UseWifi) {
+  if (networkOption == UseWifi)
+  {
     agOta = new AirgradientOTAWifi;
-  } else {
+  }
+  else
+  {
     agOta = new AirgradientOTACellular(cellularCard, agClient->getICCID());
   }
 
@@ -780,11 +1047,14 @@ void checkForFirmwareUpdate(void) {
   agOta->setHandlerCallback(otaHandlerCallback);
 
   String httpDomain = configuration.getHttpDomain();
-  if (httpDomain != "") {
+  if (httpDomain != "")
+  {
     Serial.printf("httpDomain configuration available, start OTA with custom domain\n",
                   httpDomain.c_str());
     agOta->updateIfAvailable(ag->deviceId().c_str(), GIT_VERSION, httpDomain.c_str());
-  } else {
+  }
+  else
+  {
     agOta->updateIfAvailable(ag->deviceId().c_str(), GIT_VERSION);
   }
 
@@ -798,11 +1068,15 @@ void checkForFirmwareUpdate(void) {
   Serial.println();
 }
 
-void otaHandlerCallback(AirgradientOTA::OtaResult result, const char *msg) {
-  switch (result) {
-  case AirgradientOTA::Starting: {
+void otaHandlerCallback(AirgradientOTA::OtaResult result, const char *msg)
+{
+  switch (result)
+  {
+  case AirgradientOTA::Starting:
+  {
     Serial.println("Firmware update starting...");
-    if (configuration.hasSensorSGP && networkOption == UseCellular) {
+    if (configuration.hasSensorSGP && networkOption == UseCellular)
+    {
       // Temporary pause SGP41 task while cellular firmware update is in progress
       ag->sgp41.pause();
     }
@@ -815,7 +1089,8 @@ void otaHandlerCallback(AirgradientOTA::OtaResult result, const char *msg) {
     break;
   case AirgradientOTA::Failed:
     displayExecuteOta(result, "", 0);
-    if (configuration.hasSensorSGP && networkOption == UseCellular) {
+    if (configuration.hasSensorSGP && networkOption == UseCellular)
+    {
       ag->sgp41.resume();
     }
     break;
@@ -832,61 +1107,84 @@ void otaHandlerCallback(AirgradientOTA::OtaResult result, const char *msg) {
   }
 }
 
-static void displayExecuteOta(AirgradientOTA::OtaResult result, String msg, int processing) {
-  switch (result) {
+static void displayExecuteOta(AirgradientOTA::OtaResult result, String msg, int processing)
+{
+  switch (result)
+  {
   case AirgradientOTA::Starting:
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.showFirmwareUpdateVersion(msg);
-    } else {
+    }
+    else
+    {
       Serial.println("New firmware: " + msg);
     }
     delay(2500);
     break;
   case AirgradientOTA::Failed:
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.showFirmwareUpdateFailed();
-    } else {
+    }
+    else
+    {
       Serial.println("Error: Firmware update: failed");
     }
     delay(2500);
     break;
   case AirgradientOTA::Skipped:
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.showFirmwareUpdateSkipped();
-    } else {
+    }
+    else
+    {
       Serial.println("Firmware update: Skipped");
     }
     delay(2500);
     break;
   case AirgradientOTA::AlreadyUpToDate:
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.showFirmwareUpdateUpToDate();
-    } else {
+    }
+    else
+    {
       Serial.println("Firmware update: up to date");
     }
     delay(2500);
     break;
   case AirgradientOTA::InProgress:
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.showFirmwareUpdateProgress(processing);
-    } else {
+    }
+    else
+    {
       Serial.println("Firmware update: " + String(processing) + String("%"));
     }
     break;
-  case AirgradientOTA::Success: {
+  case AirgradientOTA::Success:
+  {
     Serial.println("OTA update performed, restarting ...");
     int i = 3;
-    while (i != 0) {
+    while (i != 0)
+    {
       i = i - 1;
-      if (ag->isOne()) {
+      if (ag->isOne())
+      {
         oledDisplay.showFirmwareUpdateSuccess(i);
-      } else {
+      }
+      else
+      {
         Serial.println("Rebooting... " + String(i));
       }
       delay(1000);
     }
 
-    if (ag->isOne()) {
+    if (ag->isOne())
+    {
       oledDisplay.setBrightness(0);
     }
     break;
@@ -896,9 +1194,11 @@ static void displayExecuteOta(AirgradientOTA::OtaResult result, String msg, int 
   }
 }
 
-static void sendDataToAg() {
+static void sendDataToAg()
+{
   /** Change oledDisplay and led state */
-  if (ag->isOne()) {
+  if (ag->isOne())
+  {
     stateMachine.displayHandle(AgStateMachineWiFiOkServerConnecting);
   }
   stateMachine.handleLeds(AgStateMachineWiFiOkServerConnecting);
@@ -906,11 +1206,14 @@ static void sendDataToAg() {
 
   /** Task handle led connecting animation */
   xTaskCreate(
-      [](void *obj) {
-        for (;;) {
+      [](void *obj)
+      {
+        for (;;)
+        {
           // ledSmHandler();
           stateMachine.handleLeds();
-          if (stateMachine.getLedState() != AgStateMachineWiFiOkServerConnecting) {
+          if (stateMachine.getLedState() != AgStateMachineWiFiOkServerConnecting)
+          {
             break;
           }
           delay(LED_BAR_ANIMATION_PERIOD);
@@ -926,14 +1229,19 @@ static void sendDataToAg() {
   root["wifi"] = wifiConnector.RSSI();
   root["boot"] = measurements.bootCount();
   std::string payload = JSON.stringify(root).c_str();
-  if (agClient->httpPostMeasures(payload)) {
-    if (ag->isOne()) {
+  if (agClient->httpPostMeasures(payload))
+  {
+    if (ag->isOne())
+    {
       stateMachine.displayHandle(AgStateMachineWiFiOkServerConnected);
     }
     stateMachine.handleLeds(AgStateMachineWiFiOkServerConnected);
     wifiConnector.bleNotifyStatus(PROV_SERVER_REACHABLE);
-  } else {
-    if (ag->isOne()) {
+  }
+  else
+  {
+    if (ag->isOne())
+    {
       stateMachine.displayHandle(AgStateMachineWiFiOkServerConnectFailed);
     }
     stateMachine.handleLeds(AgStateMachineWiFiOkServerConnectFailed);
@@ -943,13 +1251,15 @@ static void sendDataToAg() {
   stateMachine.handleLeds(AgStateMachineNormal);
 }
 
-void dispSensorNotFound(String ss) {
+void dispSensorNotFound(String ss)
+{
   ss = ss + " not found";
   oledDisplay.setText("Sensor init", "Error:", ss.c_str());
   delay(2000);
 }
 
-static void oneIndoorInit(void) {
+static void oneIndoorInit(void)
+{
   configuration.hasSensorPMS2 = false;
 
   /** Display init */
@@ -969,23 +1279,28 @@ static void oneIndoorInit(void) {
   oledDisplay.setText("Press now for", "LED test", "");
   ledBarButtonTest = false;
   uint32_t stime = millis();
-  while (true) {
-    if (ag->button.getState() == ag->button.BUTTON_PRESSED) {
+  while (true)
+  {
+    if (ag->button.getState() == ag->button.BUTTON_PRESSED)
+    {
       ledBarButtonTest = true;
       stateMachine.executeLedBarPowerUpTest();
       break;
     }
     delay(1);
     uint32_t ms = (uint32_t)(millis() - stime);
-    if (ms >= 3000) {
+    if (ms >= 3000)
+    {
       break;
     }
   }
 
   /** Check for button to reset WiFi connecto to "airgraident" after test LED
    * bar */
-  if (ledBarButtonTest) {
-    if (ag->button.getState() == ag->button.BUTTON_PRESSED) {
+  if (ledBarButtonTest)
+  {
+    if (ag->button.getState() == ag->button.BUTTON_PRESSED)
+    {
       WiFi.begin("airgradient", "cleanair");
       oledDisplay.setText("Configure WiFi", "connect to", "\'airgradient\'");
       delay(2500);
@@ -1001,39 +1316,47 @@ static void oneIndoorInit(void) {
   oledDisplay.setText("Monitor", "initializing...", "");
 
   /** Init sensor SGP41 */
-  if (sgp41Init() == false) {
+  if (sgp41Init() == false)
+  {
     dispSensorNotFound("SGP41");
   }
 
   /** INit SHT */
-  if (ag->sht.begin(Wire) == false) {
+  if (ag->sht.begin(Wire) == false)
+  {
     Serial.println("SHTx sensor not found");
     configuration.hasSensorSHT = false;
     dispSensorNotFound("SHT");
   }
 
   /** Init S8 CO2 sensor */
-  if (ag->s8.begin(Serial1) == false) {
+  if (ag->s8.begin(Serial1) == false)
+  {
     Serial.println("CO2 S8 sensor not found");
     configuration.hasSensorS8 = false;
     dispSensorNotFound("S8");
   }
 
   /** Init PMS5003, fallback to SPS30 if not found */
-  if (ag->pms5003.begin(Serial0) == false) {
+  if (ag->pms5003.begin(Serial0) == false)
+  {
     Serial.println("PMS5003 not found, trying SPS30...");
     configuration.hasSensorPMS1 = false;
 
-    if (ag->sps30_1.begin(Serial0)) {
+    if (ag->sps30_1.begin(Serial0))
+    {
       Serial.println("SPS30 detected on Serial0");
       configuration.hasSensorSPS30_1 = true;
-    } else {
+    }
+    else
+    {
       Serial.println("SPS30 not found either");
       dispSensorNotFound("PM sensor");
     }
   }
 }
-static void openAirInit(void) {
+static void openAirInit(void)
+{
   configuration.hasSensorSHT = false;
 
   fwMode = FW_MODE_O_1PST;
@@ -1050,34 +1373,44 @@ static void openAirInit(void) {
   bool serial1Available = true;
   bool serial0Available = true;
 
-  if (ag->s8.begin(Serial1) == false) {
+  if (ag->s8.begin(Serial1) == false)
+  {
     Serial1.end();
     delay(200);
     Serial.println("Can not detect S8 on Serial1, try on Serial0");
     /** Check on other port */
-    if (ag->s8.begin(Serial0) == false) {
+    if (ag->s8.begin(Serial0) == false)
+    {
       configuration.hasSensorS8 = false;
 
       Serial.println("CO2 S8 sensor not found");
       Serial.println("Can not detect S8 run mode 'PPT'");
       fwMode = FW_MODE_O_1PPT;
       delay(200);
-    } else {
+    }
+    else
+    {
       Serial.println("Found S8 on Serial0");
       serial0Available = false;
     }
-  } else {
+  }
+  else
+  {
     Serial.println("Found S8 on Serial1");
     serial1Available = false;
   }
 
-  if (sgp41Init() == false) {
+  if (sgp41Init() == false)
+  {
     Serial.println("SGP sensor not found");
 
-    if (configuration.hasSensorS8 == false) {
+    if (configuration.hasSensorS8 == false)
+    {
       Serial.println("Can not detect SGP run mode 'O-1PP'");
       fwMode = FW_MODE_O_1PP;
-    } else {
+    }
+    else
+    {
       Serial.println("Can not detect SGP run mode 'O-1PS'");
       fwMode = FW_MODE_O_1PS;
     }
@@ -1090,14 +1423,17 @@ static void openAirInit(void) {
    * For dual-PM modes Serial0 → channel 1, Serial1 → channel 2.
    */
   auto detectPmOnSerial = [](HardwareSerial &serial, PMS5003T &pms, SPS30 &sps,
-                             const char *portName) -> int {
+                             const char *portName) -> int
+  {
     // Returns: 0 = none, 1 = PMS5003T, 2 = SPS30
-    if (pms.begin(serial)) {
+    if (pms.begin(serial))
+    {
       Serial.printf("Detected PMS5003T on %s\n", portName);
       return 1;
     }
     Serial.printf("PMS5003T not found on %s, trying SPS30...\n", portName);
-    if (sps.begin(serial)) {
+    if (sps.begin(serial))
+    {
       Serial.printf("Detected SPS30 on %s\n", portName);
       return 2;
     }
@@ -1105,37 +1441,48 @@ static void openAirInit(void) {
     return 0;
   };
 
-  if (fwMode == FW_MODE_O_1PST || fwMode == FW_MODE_O_1PS) {
+  if (fwMode == FW_MODE_O_1PST || fwMode == FW_MODE_O_1PS)
+  {
     // Single PM channel expected — try Serial0 first, fallback Serial1
     configuration.hasSensorPMS1 = false;
     configuration.hasSensorPMS2 = false;
     bool pmFound = false;
 
-    if (serial0Available) {
+    if (serial0Available)
+    {
       int result =
           detectPmOnSerial(Serial0, ag->pms5003t_1, ag->sps30_1, "Serial0");
-      if (result == 1) {
+      if (result == 1)
+      {
         configuration.hasSensorPMS1 = true;
         serial0Available = false;
         pmFound = true;
-      } else if (result == 2) {
+      }
+      else if (result == 2)
+      {
         configuration.hasSensorSPS30_1 = true;
         serial0Available = false;
         pmFound = true;
       }
     }
-    if (!pmFound && serial1Available) {
+    if (!pmFound && serial1Available)
+    {
       int result =
           detectPmOnSerial(Serial1, ag->pms5003t_1, ag->sps30_1, "Serial1");
-      if (result == 1) {
+      if (result == 1)
+      {
         configuration.hasSensorPMS1 = true;
         serial1Available = false;
-      } else if (result == 2) {
+      }
+      else if (result == 2)
+      {
         configuration.hasSensorSPS30_1 = true;
         serial1Available = false;
       }
     }
-  } else {
+  }
+  else
+  {
     // Dual PM channel modes (O_1PPT / O_1PP) — Serial0 → ch1, Serial1 → ch2
     configuration.hasSensorPMS1 = false;
     configuration.hasSensorPMS2 = false;
@@ -1143,58 +1490,76 @@ static void openAirInit(void) {
     // Channel 1 on Serial0
     int result1 =
         detectPmOnSerial(Serial0, ag->pms5003t_1, ag->sps30_1, "Serial0");
-    if (result1 == 1) {
+    if (result1 == 1)
+    {
       configuration.hasSensorPMS1 = true;
-    } else if (result1 == 2) {
+    }
+    else if (result1 == 2)
+    {
       configuration.hasSensorSPS30_1 = true;
     }
 
     // Channel 2 on Serial1
     int result2 =
         detectPmOnSerial(Serial1, ag->pms5003t_2, ag->sps30_2, "Serial1");
-    if (result2 == 1) {
+    if (result2 == 1)
+    {
       configuration.hasSensorPMS2 = true;
-    } else if (result2 == 2) {
+    }
+    else if (result2 == 2)
+    {
       configuration.hasSensorSPS30_2 = true;
     }
 
     // Check if we should downgrade from two-PM to single-PM mode
-    if (fwMode == FW_MODE_O_1PP) {
+    if (fwMode == FW_MODE_O_1PP)
+    {
       bool ch1HasPm =
           configuration.hasSensorPMS1 || configuration.hasSensorSPS30_1;
       bool ch2HasPm =
           configuration.hasSensorPMS2 || configuration.hasSensorSPS30_2;
-      if (ch1HasPm != ch2HasPm) {
+      if (ch1HasPm != ch2HasPm)
+      {
         fwMode = FW_MODE_O_1P;
       }
     }
   }
 
   /** Update the PMS poll period based on fw mode and sensor availability */
-  if (fwMode != FW_MODE_O_1PST && fwMode != FW_MODE_O_1PS) {
+  if (fwMode != FW_MODE_O_1PST && fwMode != FW_MODE_O_1PS)
+  {
     bool ch1HasPm =
         configuration.hasSensorPMS1 || configuration.hasSensorSPS30_1;
     bool ch2HasPm =
         configuration.hasSensorPMS2 || configuration.hasSensorSPS30_2;
-    if (ch1HasPm && ch2HasPm) {
+    if (ch1HasPm && ch2HasPm)
+    {
       pmsSchedule.setPeriod(2000);
     }
   }
   Serial.printf("Firmware Mode: %s\r\n", AgFirmwareModeName(fwMode));
 }
 
-static void boardInit(void) {
-  if (ag->isOne()) {
+static void boardInit(void)
+{
+  if (ag->isOne())
+  {
     oneIndoorInit();
-  } else {
+  }
+  else
+  {
     openAirInit();
   }
 
   /** Set S8 CO2 abc days period */
-  if (configuration.hasSensorS8) {
-    if (ag->s8.setAbcPeriod(configuration.getCO2CalibrationAbcDays() * 24)) {
+  if (configuration.hasSensorS8)
+  {
+    if (ag->s8.setAbcPeriod(configuration.getCO2CalibrationAbcDays() * 24))
+    {
       Serial.println("Set S8 AbcDays successful");
-    } else {
+    }
+    else
+    {
       Serial.println("Set S8 AbcDays failure");
     }
 
@@ -1204,15 +1569,19 @@ static void boardInit(void) {
   localServer.setFwMode(fwMode);
 }
 
-static void failedHandler(String msg) {
-  while (true) {
+static void failedHandler(String msg)
+{
+  while (true)
+  {
     Serial.println(msg);
     vTaskDelay(1000);
   }
 }
 
-static AirgradientClient::PayloadType getClientPayloadType() {
-  if (!ag->isOne() && (fwMode == FW_MODE_O_1PPT || fwMode == FW_MODE_O_1PP)) {
+static AirgradientClient::PayloadType getClientPayloadType()
+{
+  if (!ag->isOne() && (fwMode == FW_MODE_O_1PPT || fwMode == FW_MODE_O_1PP))
+  {
     return AirgradientClient::ONE_OPENAIR_TWO_PMS;
   }
 
@@ -1222,7 +1591,8 @@ static AirgradientClient::PayloadType getClientPayloadType() {
 // Map averaged sensor measures into the client CommonPayload struct. Values are
 // stored raw (the client encoder applies scaling); invalid readings use the
 // utils invalid sentinels, which the client IS_*_VALID macros treat as invalid.
-static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc) {
+static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measures &mc)
+{
   AirgradientClient::CommonPayload c;
 
   // CO2, Temperature, Humidity
@@ -1270,23 +1640,29 @@ static AirgradientClient::CommonPayload buildCommonPayload(Measurements::Measure
   return c;
 }
 
-static void restoreOperatorState() {
+static void restoreOperatorState()
+{
   String ops = configuration.getCellOperators();
-  if (ops.length() == 0) {
+  if (ops.length() == 0)
+  {
     Serial.println("No saved operator state to restore");
     return;
   }
   uint32_t opId = configuration.getCellOperatorId();
   uint32_t failCount = configuration.getCellOperatorFailCount();
-  if (cellularCard->setOperators(ops.c_str(), opId, failCount)) {
+  if (cellularCard->setOperators(ops.c_str(), opId, failCount))
+  {
     Serial.printf("Restored operator state: id=%u, failCount=%u, list=%s\n", opId,
                   failCount, ops.c_str());
-  } else {
+  }
+  else
+  {
     Serial.println("Failed to restore operator state");
   }
 }
 
-static void saveOperatorState() {
+static void saveOperatorState()
+{
   String ops = cellularCard->getSerializedOperators().c_str();
   uint32_t opId = cellularCard->getCurrentOperatorId();
   uint32_t failCount = cellularCard->getRegistrationFailCount();
@@ -1295,11 +1671,19 @@ static void saveOperatorState() {
                 failCount, ops.c_str());
 }
 
-void initializeNetwork() {
+void initializeNetwork()
+{
+#if defined(AG_SKIP_CELLULAR_PROBE) && AG_SKIP_CELLULAR_PROBE
+  Serial.println("Network: cellular probe skipped for Wi-Fi test");
+#else
   // Check if cellular module available
   agSerial = new AgSerial(Wire);
+  Serial.println("Network: configuring cellular reset pin");
   agSerial->init(GPIO_IIC_RESET);
-  if (agSerial->open()) {
+  Serial.println("Network: opening cellular I2C-UART bridge");
+#endif
+  if (agSerial != nullptr && agSerial->open())
+  {
     Serial.println("Cellular module found");
     // Initialize cellular module and use cellular as agClient
     cellularCard = new CellularModuleA7672XX(agSerial, GPIO_POWER_MODULE_PIN);
@@ -1307,7 +1691,9 @@ void initializeNetwork() {
     restoreOperatorState();
     agClient = new AirgradientCellularClient(cellularCard);
     networkOption = UseCellular;
-  } else {
+  }
+  else
+  {
     Serial.println("Cellular module not available, using wifi");
     delete agSerial;
     agSerial = nullptr;
@@ -1316,13 +1702,15 @@ void initializeNetwork() {
     networkOption = UseWifi;
   }
 
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     // Enable serial stream debugging to check the AT command when doing registration
     agSerial->setDebug(true);
   }
 
   String httpDomain = configuration.getHttpDomain();
-  if (httpDomain != "") {
+  if (httpDomain != "")
+  {
     agClient->setHttpDomain(httpDomain.c_str());
     Serial.printf("HTTP domain name is set to: %s\n", httpDomain.c_str());
     oledDisplay.setText("HTTP domain name", "using local", "configuration");
@@ -1331,8 +1719,12 @@ void initializeNetwork() {
 
   agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
 
-  if (!agClient->begin(ag->deviceId().c_str(), getClientPayloadType())) {
-    if (networkOption == UseCellular) {
+  Serial.println("Network: initializing client");
+  if (!agClient->begin(ag->deviceId().c_str(), getClientPayloadType()))
+  {
+    Serial.println("Network: client initialization failed, restarting");
+    if (networkOption == UseCellular)
+    {
       saveOperatorState();
     }
     oledDisplay.setText("Client", "initialization", "failed");
@@ -1344,26 +1736,32 @@ void initializeNetwork() {
   }
 
   // Save operator state after successful registration
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     saveOperatorState();
   }
 
   // Provide openmetrics to have access to last transmission result
   openMetrics.setAirgradientClient(agClient);
 
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     // Disabling it again
     agSerial->setDebug(false);
   }
 
-  if (networkOption == UseWifi) {
+  if (networkOption == UseWifi)
+  {
+    Serial.println("Network: starting Wi-Fi connection");
     String modelName = AgFirmwareModeName(fwMode);
-    if (!wifiConnector.connect(modelName)) {
+    if (!wifiConnector.connect(modelName))
+    {
       Serial.println("Cannot initiate wifi connection");
       return;
     }
 
-    if (!wifiConnector.isConnected()) {
+    if (!wifiConnector.isConnected())
+    {
       Serial.println("Failed connect to WiFi");
       oledDisplay.showRebooting();
       delay(2500);
@@ -1372,80 +1770,103 @@ void initializeNetwork() {
     }
 
     // Initiate local network configuration
+    Serial.println("Network: Wi-Fi connected, starting local services");
     mdnsInit();
     localServer.begin();
     // Apply mqtt connection if configured
     initMqtt();
 
     // Ignore the rest if cloud connection to AirGradient is disabled
-    if (configuration.isCloudConnectionDisabled()) {
+    if (configuration.isCloudConnectionDisabled())
+    {
       return;
     }
 
     // Send data for the first time to AG server at boot only if postDataToAirgradient is enabled
-    if (configuration.isPostDataToAirGradient()) {
+    if (configuration.isPostDataToAirGradient())
+    {
       sendDataToAg();
     }
   }
 
   // Skip fetch configuration if configuration control is set to "local" only
-  if (configuration.getConfigurationControl() == ConfigurationControl::ConfigurationControlLocal) {
+  if (configuration.getConfigurationControl() == ConfigurationControl::ConfigurationControlLocal)
+  {
     ledBarEnabledUpdate();
     return;
   }
 
   std::string config;
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     config = agClient->coapFetchConfig();
-  } else {
+  }
+  else
+  {
     config = agClient->httpFetchConfig();
   }
   configSchedule.update();
   // Check if fetch configuration failed or fetch succes but parsing failed
   if (agClient->isLastFetchConfigSucceed() == false ||
-      configuration.parse(config.c_str(), false) == false) {
-    if (ag->isOne()) {
-      if (agClient->isRegisteredOnAgServer() == false) {
+      configuration.parse(config.c_str(), false) == false)
+  {
+    if (ag->isOne())
+    {
+      if (agClient->isRegisteredOnAgServer() == false)
+      {
         stateMachine.displaySetAddToDashBoard();
         stateMachine.displayHandle(AgStateMachineWiFiOkServerOkSensorConfigFailed);
         wifiConnector.bleNotifyStatus(PROV_ERR_MONITOR_NOT_REGISTERED);
-      } else {
+      }
+      else
+      {
         stateMachine.displayClearAddToDashBoard();
         wifiConnector.bleNotifyStatus(PROV_ERR_GET_MONITOR_CONFIG_FAILED);
       }
     }
     stateMachine.handleLeds(AgStateMachineWiFiOkServerOkSensorConfigFailed);
     delay(DISPLAY_DELAY_SHOW_CONTENT_MS);
-  } else {
+  }
+  else
+  {
     ledBarEnabledUpdate();
     wifiConnector.bleNotifyStatus(PROV_MONITOR_CONFIGURED);
   }
 }
 
-static void configurationUpdateSchedule(void) {
-  if (configuration.getConfigurationControl() == ConfigurationControl::ConfigurationControlLocal) {
+static void configurationUpdateSchedule(void)
+{
+  if (configuration.getConfigurationControl() == ConfigurationControl::ConfigurationControlLocal)
+  {
     Serial.println("Ignore fetch server configuration, configurationControl set to local");
     agClient->resetFetchConfigurationStatus();
     return;
   }
 
   std::string config;
-  if (networkOption == UseCellular) {
+  if (networkOption == UseCellular)
+  {
     config = agClient->coapFetchConfig();
-  } else {
+  }
+  else
+  {
     config = agClient->httpFetchConfig();
   }
-  if (agClient->isLastFetchConfigSucceed()) {
+  if (agClient->isLastFetchConfigSucceed())
+  {
     configuration.parse(config.c_str(), false);
   }
 }
 
-static void configUpdateHandle() {
-  if (configuration.isUpdated() == false) {
+static void configUpdateHandle()
+{
+  if (configuration.isUpdated() == false)
+  {
     return;
   }
 
-  if (fanController != nullptr && fanController->isReady()) {
+  if (fanController != nullptr && fanController->isReady())
+  {
     Configuration::PpsConfig pps{};
     configuration.getPpsConfig(pps);
     fanController->setConfig(pps.active, pps.minSpeed, pps.maxSpeed);
@@ -1453,17 +1874,22 @@ static void configUpdateHandle() {
   }
 
   String mqttUri = configuration.getMqttBrokerUri();
-  if (mqttClient.isCurrentUri(mqttUri) == false) {
+  if (mqttClient.isCurrentUri(mqttUri) == false)
+  {
     mqttClient.end();
     initMqtt();
   }
 
-  if (agClient != nullptr) {
+  if (agClient != nullptr)
+  {
     String httpDomain = configuration.getHttpDomain();
-    if (httpDomain != "") {
+    if (httpDomain != "")
+    {
       Serial.printf("HTTP domain name set to: %s\n", httpDomain.c_str());
       agClient->setHttpDomain(httpDomain.c_str());
-    } else {
+    }
+    else
+    {
       // Its empty, set to default
       Serial.println("HTTP domain name from configuration empty, set to default");
       agClient->setHttpDomainDefault();
@@ -1472,34 +1898,45 @@ static void configUpdateHandle() {
     agClient->setExtendedPmMeasures(configuration.isExtendedPmMeasuresEnabled());
   }
 
-  if (configuration.hasSensorSGP) {
-    if (configuration.noxLearnOffsetChanged() || configuration.tvocLearnOffsetChanged()) {
+  if (configuration.hasSensorSGP)
+  {
+    if (configuration.noxLearnOffsetChanged() || configuration.tvocLearnOffsetChanged())
+    {
       ag->sgp41.end();
 
       int oldTvocOffset = ag->sgp41.getTvocLearningOffset();
       int oldNoxOffset = ag->sgp41.getNoxLearningOffset();
       bool result = sgp41Init();
       const char *resultStr = "successful";
-      if (!result) {
+      if (!result)
+      {
         resultStr = "failure";
       }
-      if (oldTvocOffset != configuration.getTvocLearningOffset()) {
+      if (oldTvocOffset != configuration.getTvocLearningOffset())
+      {
         Serial.printf("Setting tvocLearningOffset from %d to %d hours %s\r\n", oldTvocOffset,
                       configuration.getTvocLearningOffset(), resultStr);
       }
-      if (oldNoxOffset != configuration.getNoxLearningOffset()) {
+      if (oldNoxOffset != configuration.getNoxLearningOffset())
+      {
         Serial.printf("Setting noxLearningOffset from %d to %d hours %s\r\n", oldNoxOffset,
                       configuration.getNoxLearningOffset(), resultStr);
       }
     }
   }
 
-  if (ag->isOne()) {
-    if (configuration.isLedBarBrightnessChanged()) {
-      if (configuration.getLedBarBrightness() == 0) {
+  if (ag->isOne())
+  {
+    if (configuration.isLedBarBrightnessChanged())
+    {
+      if (configuration.getLedBarBrightness() == 0)
+      {
         ag->ledBar.setEnable(false);
-      } else {
-        if (configuration.getLedBarMode() != LedBarMode::LedBarModeOff) {
+      }
+      else
+      {
+        if (configuration.getLedBarMode() != LedBarMode::LedBarModeOff)
+        {
           ag->ledBar.setEnable(true);
         }
         ag->ledBar.setBrightness(configuration.getLedBarBrightness());
@@ -1507,13 +1944,20 @@ static void configUpdateHandle() {
       ag->ledBar.show();
     }
 
-    if (configuration.isLedBarModeChanged()) {
-      if (configuration.getLedBarBrightness() == 0) {
+    if (configuration.isLedBarModeChanged())
+    {
+      if (configuration.getLedBarBrightness() == 0)
+      {
         ag->ledBar.setEnable(false);
-      } else {
-        if (configuration.getLedBarMode() == LedBarMode::LedBarModeOff) {
+      }
+      else
+      {
+        if (configuration.getLedBarMode() == LedBarMode::LedBarModeOff)
+        {
           ag->ledBar.setEnable(false);
-        } else {
+        }
+        else
+        {
           ag->ledBar.setEnable(true);
           ag->ledBar.setBrightness(configuration.getLedBarBrightness());
         }
@@ -1521,13 +1965,16 @@ static void configUpdateHandle() {
       ag->ledBar.show();
     }
 
-    if (configuration.isDisplayBrightnessChanged()) {
+    if (configuration.isDisplayBrightnessChanged())
+    {
       oledDisplay.setBrightness(configuration.getDisplayBrightness());
     }
   }
 
-  if (configuration.isSatellitesChanged() && configuration.isSatellitesEnabled()) {
-    if (satellites == nullptr) {
+  if (configuration.isSatellitesChanged() && configuration.isSatellitesEnabled())
+  {
+    if (satellites == nullptr)
+    {
       // Initialized if satellites enabled on run time
       satellites = new AgSatellites(measurements, configuration);
       measurements.setSatellites(satellites);
@@ -1535,7 +1982,8 @@ static void configUpdateHandle() {
     }
   }
 
-  if (!serialResetRequested) {
+  if (!serialResetRequested)
+  {
     requestBoardSelectionReboot();
   }
 
@@ -1543,17 +1991,21 @@ static void configUpdateHandle() {
   updateDisplayAndLedBar();
 }
 
-static BoardType getBoardType() {
+static BoardType getBoardType()
+{
   return hardwareIdentity.resolve(oledDetected, configuration.getModel());
 }
 
-static void requestBoardSelectionReboot() {
-  if (hardwareIdentity.isProvisioned()) {
+static void requestBoardSelectionReboot()
+{
+  if (hardwareIdentity.isProvisioned())
+  {
     return;
   }
 
   const BoardType boardType = getBoardType();
-  if (boardType == ag->getBoardType()) {
+  if (boardType == ag->getBoardType())
+  {
     return;
   }
 
@@ -1562,7 +2014,8 @@ static void requestBoardSelectionReboot() {
                 configuration.getModel().c_str(),
                 boardType == BoardType::ONE_INDOOR ? "ONE_INDOOR"
                                                    : "OPEN_AIR_OUTDOOR");
-  if (mainTaskHandle == NULL) {
+  if (mainTaskHandle == NULL)
+  {
     Serial.println(
         "Cannot request board selection reboot: main task unavailable");
     return;
@@ -1570,27 +2023,35 @@ static void requestBoardSelectionReboot() {
   xTaskNotifyGive(mainTaskHandle);
 }
 
-static void updateDisplayAndLedBar(void) {
-  if (factoryBtnPressTime != 0) {
+static void updateDisplayAndLedBar(void)
+{
+  if (factoryBtnPressTime != 0)
+  {
     // Do not distrub factory reset sequence countdown
     return;
   }
 
-  if (configuration.isOfflineMode()) {
+  if (configuration.isOfflineMode())
+  {
     // Ignore network related status when in offline mode
     stateMachine.displayHandle(AgStateMachineNormal);
     stateMachine.handleLeds(AgStateMachineNormal);
     return;
   }
 
-  if (networkOption == UseWifi) {
-    if (wifiConnector.isConnected() == false) {
+  if (networkOption == UseWifi)
+  {
+    if (wifiConnector.isConnected() == false)
+    {
       stateMachine.displayHandle(AgStateMachineWiFiLost);
       stateMachine.handleLeds(AgStateMachineWiFiLost);
       return;
     }
-  } else if (networkOption == UseCellular) {
-    if (agClient->isClientReady() == false) {
+  }
+  else if (networkOption == UseCellular)
+  {
+    if (agClient->isClientReady() == false)
+    {
       // Same action as wifi
       stateMachine.displayHandle(AgStateMachineWiFiLost);
       stateMachine.handleLeds(AgStateMachineWiFiLost);
@@ -1598,7 +2059,8 @@ static void updateDisplayAndLedBar(void) {
     }
   }
 
-  if (configuration.isCloudConnectionDisabled()) {
+  if (configuration.isCloudConnectionDisabled())
+  {
     // Ignore API related check since cloud is disabled
     stateMachine.displayHandle(AgStateMachineNormal);
     stateMachine.handleLeds(AgStateMachineNormal);
@@ -1606,15 +2068,21 @@ static void updateDisplayAndLedBar(void) {
   }
 
   AgStateMachineState state = AgStateMachineNormal;
-  if (agClient->isLastFetchConfigSucceed() == false) {
+  if (agClient->isLastFetchConfigSucceed() == false)
+  {
     state = AgStateMachineSensorConfigFailed;
-    if (agClient->isRegisteredOnAgServer() == false) {
+    if (agClient->isRegisteredOnAgServer() == false)
+    {
       stateMachine.displaySetAddToDashBoard();
-    } else {
+    }
+    else
+    {
       stateMachine.displayClearAddToDashBoard();
     }
-  } else if (agClient->isLastPostMeasureSucceed() == false &&
-             configuration.isPostDataToAirGradient()) {
+  }
+  else if (agClient->isLastPostMeasureSucceed() == false &&
+           configuration.isPostDataToAirGradient())
+  {
     state = AgStateMachineServerLost;
   }
 
@@ -1622,8 +2090,10 @@ static void updateDisplayAndLedBar(void) {
   stateMachine.handleLeds(state);
 }
 
-static void updateTvoc(void) {
-  if (!configuration.hasSensorSGP) {
+static void updateTvoc(void)
+{
+  if (!configuration.hasSensorSGP)
+  {
     return;
   }
 
@@ -1633,8 +2103,10 @@ static void updateTvoc(void) {
   measurements.update(Measurements::NOxRaw, ag->sgp41.getNoxRaw());
 }
 
-static void updatePMS5003() {
-  if (ag->pms5003.connected()) {
+static void updatePMS5003()
+{
+  if (ag->pms5003.connected())
+  {
     measurements.update(Measurements::PM01, ag->pms5003.getPm01Ae());
     measurements.update(Measurements::PM25, ag->pms5003.getPm25Ae());
     measurements.update(Measurements::PM10, ag->pms5003.getPm10Ae());
@@ -1647,7 +2119,9 @@ static void updatePMS5003() {
     measurements.update(Measurements::PM25_PC, ag->pms5003.getPm25ParticleCount());
     measurements.update(Measurements::PM5_PC, ag->pms5003.getPm5ParticleCount());
     measurements.update(Measurements::PM10_PC, ag->pms5003.getPm10ParticleCount());
-  } else {
+  }
+  else
+  {
     measurements.update(Measurements::PM01, utils::getInvalidPmValue());
     measurements.update(Measurements::PM25, utils::getInvalidPmValue());
     measurements.update(Measurements::PM10, utils::getInvalidPmValue());
@@ -1663,8 +2137,10 @@ static void updatePMS5003() {
   }
 }
 
-static void updateSPS30(SPS30 &sensor, int channel) {
-  if (sensor.readValues()) {
+static void updateSPS30(SPS30 &sensor, int channel)
+{
+  if (sensor.readValues())
+  {
     // Mass concentrations — mapped to both Ae and SP (SPS30 has no distinction)
     measurements.update(Measurements::PM01, sensor.getPm01Ae(), channel);
     measurements.update(Measurements::PM25, sensor.getPm25Ae(), channel);
@@ -1678,7 +2154,9 @@ static void updateSPS30(SPS30 &sensor, int channel) {
     measurements.update(Measurements::PM01_PC, sensor.getPm01ParticleCount(), channel);
     measurements.update(Measurements::PM25_PC, sensor.getPm25ParticleCount(), channel);
     measurements.update(Measurements::PM10_PC, sensor.getPm10ParticleCount(), channel);
-  } else {
+  }
+  else
+  {
     measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
     measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
     measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
@@ -1692,11 +2170,16 @@ static void updateSPS30(SPS30 &sensor, int channel) {
   }
 }
 
-static void updatePm(void) {
-  if (ag->isOne()) {
-    if (configuration.hasSensorSPS30_1) {
+static void updatePm(void)
+{
+  if (ag->isOne())
+  {
+    if (configuration.hasSensorSPS30_1)
+    {
       updateSPS30(ag->sps30_1, 1);
-    } else {
+    }
+    else
+    {
       updatePMS5003();
     }
     return;
@@ -1708,9 +2191,11 @@ static void updatePm(void) {
   bool newPmsTempHumCh2 = false;
 
   // ---- Channel 1 ----
-  if (configuration.hasSensorPMS1) {
+  if (configuration.hasSensorPMS1)
+  {
     int channel = 1;
-    if (ag->pms5003t_1.connected()) {
+    if (ag->pms5003t_1.connected())
+    {
       measurements.update(Measurements::PM01, ag->pms5003t_1.getPm01Ae(), channel);
       measurements.update(Measurements::PM25, ag->pms5003t_1.getPm25Ae(), channel);
       measurements.update(Measurements::PM10, ag->pms5003t_1.getPm10Ae(), channel);
@@ -1724,7 +2209,9 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, ag->pms5003t_1.getTemperature(), channel);
       measurements.update(Measurements::Humidity, ag->pms5003t_1.getRelativeHumidity(), channel);
       newPmsTempHumCh1 = true;
-    } else {
+    }
+    else
+    {
       measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
@@ -1738,14 +2225,18 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, utils::getInvalidTemperature(), channel);
       measurements.update(Measurements::Humidity, utils::getInvalidHumidity(), channel);
     }
-  } else if (configuration.hasSensorSPS30_1) {
+  }
+  else if (configuration.hasSensorSPS30_1)
+  {
     updateSPS30(ag->sps30_1, 1);
   }
 
   // ---- Channel 2 ----
-  if (configuration.hasSensorPMS2) {
+  if (configuration.hasSensorPMS2)
+  {
     int channel = 2;
-    if (ag->pms5003t_2.connected()) {
+    if (ag->pms5003t_2.connected())
+    {
       measurements.update(Measurements::PM01, ag->pms5003t_2.getPm01Ae(), channel);
       measurements.update(Measurements::PM25, ag->pms5003t_2.getPm25Ae(), channel);
       measurements.update(Measurements::PM10, ag->pms5003t_2.getPm10Ae(), channel);
@@ -1759,7 +2250,9 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, ag->pms5003t_2.getTemperature(), channel);
       measurements.update(Measurements::Humidity, ag->pms5003t_2.getRelativeHumidity(), channel);
       newPmsTempHumCh2 = true;
-    } else {
+    }
+    else
+    {
       measurements.update(Measurements::PM01, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM25, utils::getInvalidPmValue(), channel);
       measurements.update(Measurements::PM10, utils::getInvalidPmValue(), channel);
@@ -1773,25 +2266,34 @@ static void updatePm(void) {
       measurements.update(Measurements::Temperature, utils::getInvalidTemperature(), channel);
       measurements.update(Measurements::Humidity, utils::getInvalidHumidity(), channel);
     }
-  } else if (configuration.hasSensorSPS30_2) {
+  }
+  else if (configuration.hasSensorSPS30_2)
+  {
     updateSPS30(ag->sps30_2, 2);
   }
 
   // SGP41 compensation — only uses T/RH from PMS5003T channels (SPS30 has no T/RH)
-  if (configuration.hasSensorSGP) {
-    if (newPmsTempHumCh1 || newPmsTempHumCh2) {
+  if (configuration.hasSensorSGP)
+  {
+    if (newPmsTempHumCh1 || newPmsTempHumCh2)
+    {
       float temp, hum;
-      if (newPmsTempHumCh1 && newPmsTempHumCh2) {
+      if (newPmsTempHumCh1 && newPmsTempHumCh2)
+      {
         temp = (measurements.getFloat(Measurements::Temperature, 1) +
                 measurements.getFloat(Measurements::Temperature, 2)) /
                2.0f;
         hum = (measurements.getFloat(Measurements::Humidity, 1) +
                measurements.getFloat(Measurements::Humidity, 2)) /
               2.0f;
-      } else if (newPmsTempHumCh1) {
+      }
+      else if (newPmsTempHumCh1)
+      {
         temp = measurements.getFloat(Measurements::Temperature, 1);
         hum = measurements.getFloat(Measurements::Humidity, 1);
-      } else {
+      }
+      else
+      {
         temp = measurements.getFloat(Measurements::Temperature, 2);
         hum = measurements.getFloat(Measurements::Humidity, 2);
       }
@@ -1802,21 +2304,24 @@ static void updatePm(void) {
   }
 }
 
-void postUsingWifi() {
+void postUsingWifi()
+{
   // Increment bootcount when send measurements data is scheduled
   int bootCount = measurements.bootCount() + 1;
   measurements.setBootCount(bootCount);
 
   int fanSpeedPercent = -1;
   int fanRpm = -1;
-  if (fanController != nullptr && fanController->isReady()) {
+  if (fanController != nullptr && fanController->isReady())
+  {
     fanSpeedPercent = fanController->getSpeedPercent();
     fanRpm = fanController->getActualRPM();
   }
 
   String payload =
       measurements.toString(false, fwMode, wifiConnector.RSSI(), fanSpeedPercent, fanRpm);
-  if (agClient->httpPostMeasures(payload.c_str()) == false) {
+  if (agClient->httpPostMeasures(payload.c_str()) == false)
+  {
     Serial.println();
     Serial.println("Online mode and isPostToAirGradient = true");
     Serial.println();
@@ -1829,7 +2334,8 @@ void postUsingWifi() {
 /**
  * forcePost to force post without checking transmit cycle
  */
-void postUsingCellular(bool forcePost) {
+void postUsingCellular(bool forcePost)
+{
   // Aquire queue mutex; held across the post so newMeasurementCycle cannot
   // mutate the payload mid-encode. newMeasurementCycle uses a bounded take so
   // loop() never stalls past the external watchdog.
@@ -1837,7 +2343,8 @@ void postUsingCellular(bool forcePost) {
 
   // Make sure measurement cycle available
   int queueSize = measurementPayload.bufferCount;
-  if (queueSize == 0) {
+  if (queueSize == 0)
+  {
     Serial.println("Skipping transmission, measurementCycle empty");
     xSemaphoreGive(mutexMeasurementCycleQueue);
     return;
@@ -1847,7 +2354,8 @@ void postUsingCellular(bool forcePost) {
   // override breaks a deadlock: the cap pins size at a non-multiple of 3, which
   // the divisibility gate alone would never release.
   bool queueFull = queueSize >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE;
-  if (!forcePost && !queueFull && (queueSize % MEASUREMENT_TRANSMIT_CYCLE) > 0) {
+  if (!forcePost && !queueFull && (queueSize % MEASUREMENT_TRANSMIT_CYCLE) > 0)
+  {
     Serial.printf("Not ready to transmit, queue size are %d\n", queueSize);
     xSemaphoreGive(mutexMeasurementCycleQueue);
     return;
@@ -1859,7 +2367,8 @@ void postUsingCellular(bool forcePost) {
   measurementPayload.signal = cellularCard->csqToDbm(lastCellSignalQuality); // latest signal as RSSI
 
   // Attempt to send over CoAP
-  if (agClient->coapPostMeasures(measurementPayload) == false) {
+  if (agClient->coapPostMeasures(measurementPayload) == false)
+  {
     // Consider network has a problem, retry in next schedule (data retained)
     Serial.println("Post measures failed, retry in next schedule");
     xSemaphoreGive(mutexMeasurementCycleQueue);
@@ -1871,23 +2380,30 @@ void postUsingCellular(bool forcePost) {
   xSemaphoreGive(mutexMeasurementCycleQueue);
 }
 
-void sendDataToServer(void) {
-  if (configuration.isPostDataToAirGradient() == false) {
+void sendDataToServer(void)
+{
+  if (configuration.isPostDataToAirGradient() == false)
+  {
     Serial.println("Skipping transmission of data to AG server, post data to server disabled");
     agClient->resetPostMeasuresStatus();
     return;
   }
 
-  if (networkOption == UseWifi) {
+  if (networkOption == UseWifi)
+  {
     postUsingWifi();
-  } else if (networkOption == UseCellular) {
+  }
+  else if (networkOption == UseCellular)
+  {
     postUsingCellular(false);
   }
 }
 
-static void tempHumUpdate(void) {
+static void tempHumUpdate(void)
+{
   delay(100);
-  if (ag->sht.measure()) {
+  if (ag->sht.measure())
+  {
     float temp = ag->sht.getTemperature();
     float rhum = ag->sht.getRelativeHumidity();
 
@@ -1895,10 +2411,13 @@ static void tempHumUpdate(void) {
     measurements.update(Measurements::Humidity, rhum);
 
     // Update compensation temperature and humidity for SGP41
-    if (configuration.hasSensorSGP) {
+    if (configuration.hasSensorSGP)
+    {
       ag->sgp41.setCompensationTemperatureHumidity(temp, rhum);
     }
-  } else {
+  }
+  else
+  {
     measurements.update(Measurements::Temperature, utils::getInvalidTemperature());
     measurements.update(Measurements::Humidity, utils::getInvalidHumidity());
     Serial.println("SHT read failed");
@@ -1906,7 +2425,8 @@ static void tempHumUpdate(void) {
 }
 
 /* Set max period for each measurement type based on sensor update interval*/
-void setMeasurementMaxPeriod() {
+void setMeasurementMaxPeriod()
+{
   int max;
 
   /// Max period for S8 sensors measurements
@@ -1935,13 +2455,16 @@ void setMeasurementMaxPeriod() {
   measurements.maxPeriod(Measurements::PM10_PC, max);
 
   // Temperature and Humidity
-  if (configuration.hasSensorSHT) {
+  if (configuration.hasSensorSHT)
+  {
     /// Max period for SHT sensors measurements
     measurements.maxPeriod(Measurements::Temperature,
                            calculateMaxPeriod(SENSOR_TEMP_HUM_UPDATE_INTERVAL));
     measurements.maxPeriod(Measurements::Humidity,
                            calculateMaxPeriod(SENSOR_TEMP_HUM_UPDATE_INTERVAL));
-  } else {
+  }
+  else
+  {
     /// Temp and hum data retrieved from PMS5003T sensor
     measurements.maxPeriod(Measurements::Temperature,
                            calculateMaxPeriod(SENSOR_PM_UPDATE_INTERVAL));
@@ -1949,18 +2472,24 @@ void setMeasurementMaxPeriod() {
   }
 }
 
-int calculateMaxPeriod(int updateInterval) {
+int calculateMaxPeriod(int updateInterval)
+{
   // 0.8 is 80% reduced interval for max period
   // NOTE: Both network option use the same measurement interval
   return (WIFI_MEASUREMENT_INTERVAL - (WIFI_MEASUREMENT_INTERVAL * 0.8)) / updateInterval;
 }
 
-void networkSignalCheck() {
-  if (networkOption == UseWifi) {
+void networkSignalCheck()
+{
+  if (networkOption == UseWifi)
+  {
     Serial.printf("WiFi RSSI %d\n", wifiConnector.RSSI());
-  } else if (networkOption == UseCellular) {
+  }
+  else if (networkOption == UseCellular)
+  {
     auto result = cellularCard->retrieveSignal();
-    if (result.status != CellReturnStatus::Ok) {
+    if (result.status != CellReturnStatus::Ok)
+    {
       agClient->setClientReady(false);
       lastCellSignalQuality = 99;
       return;
@@ -1969,7 +2498,8 @@ void networkSignalCheck() {
     // Save last signal quality
     lastCellSignalQuality = result.data;
 
-    if (result.data == 99) {
+    if (result.data == 99)
+    {
       // 99 indicate cellular not attached to network
       agClient->setClientReady(false);
       return;
@@ -1982,20 +2512,26 @@ void networkSignalCheck() {
 /**
  * If in 2 hours cellular client still not ready, then restart system
  */
-void restartIfCeClientIssueOverTwoHours() {
+void restartIfCeClientIssueOverTwoHours()
+{
   // Recovery can clear the timestamp from the network task; use one snapshot.
   const uint32_t problemDetectedTime =
       agCeClientProblemDetectedTime.load(std::memory_order_relaxed);
   if (problemDetectedTime > 0 &&
-      (MINUTES() - problemDetectedTime) > TIMEOUT_WAIT_FOR_CELLULAR_MODULE_READY) {
+      (MINUTES() - problemDetectedTime) > TIMEOUT_WAIT_FOR_CELLULAR_MODULE_READY)
+  {
     // Give up wait
     Serial.println("Rebooting because CE client issues for 2 hours detected");
     int i = 3;
-    while (i != 0) {
-      if (ag->isOne()) {
+    while (i != 0)
+    {
+      if (ag->isOne())
+      {
         String tmp = "Rebooting in " + String(i);
         oledDisplay.setText("CE error", "since 2h", tmp.c_str());
-      } else {
+      }
+      else
+      {
         Serial.println("Rebooting... " + String(i));
       }
       i = i - 1;
@@ -2006,9 +2542,11 @@ void restartIfCeClientIssueOverTwoHours() {
   }
 }
 
-void networkingTask(void *args) {
+void networkingTask(void *args)
+{
   // If cloud connection enabled, run first transmission to server at boot
-  if (configuration.isCloudConnectionDisabled() == false) {
+  if (configuration.isCloudConnectionDisabled() == false)
+  {
     // OTA check on boot
 #ifndef ESP8266
     checkForFirmwareUpdate();
@@ -2017,7 +2555,8 @@ void networkingTask(void *args) {
 
     // Because cellular interval is longer, needs to send first measures cycle on
     // boot to indicate that its online
-    if (networkOption == UseCellular) {
+    if (networkOption == UseCellular)
+    {
       Serial.println("Prepare first measures cycle to send on boot for 20s");
       delay(20000);
       networkSignalCheck();
@@ -2030,18 +2569,25 @@ void networkingTask(void *args) {
     transmissionSchedule.update();
   }
 
-  while (1) {
+  while (1)
+  {
     // Handle reconnection based on mode
-    if (networkOption == UseWifi) {
+    if (networkOption == UseWifi)
+    {
       wifiConnector.handle();
-      if (wifiConnector.isConnected() == false) {
+      if (wifiConnector.isConnected() == false)
+      {
         delay(1000);
         continue;
       }
-    } else if (networkOption == UseCellular) {
-      if (agClient->isClientReady() == false) {
+    }
+    else if (networkOption == UseCellular)
+    {
+      if (agClient->isClientReady() == false)
+      {
         // Start time if value still default
-        if (agCeClientProblemDetectedTime.load(std::memory_order_relaxed) == 0) {
+        if (agCeClientProblemDetectedTime.load(std::memory_order_relaxed) == 0)
+        {
           agCeClientProblemDetectedTime.store(MINUTES(), std::memory_order_relaxed);
         }
 
@@ -2055,7 +2601,8 @@ void networkingTask(void *args) {
         // Power cycling cellular module due to network issues for more than 1 hour
         bool resetModule = true;
         if ((MINUTES() - agCeClientProblemDetectedTime.load(std::memory_order_relaxed)) >
-            TIME_TO_START_POWER_CYCLE_CELLULAR_MODULE) {
+            TIME_TO_START_POWER_CYCLE_CELLULAR_MODULE)
+        {
           Serial.println("The CE client hasn't recovered in more than 1 hour, "
                          "performing a power cycle");
           cellularCard->powerOff();
@@ -2068,7 +2615,8 @@ void networkingTask(void *args) {
 
         // Attempt to reconnect
         Serial.println("Cellular client not ready, ensuring connection...");
-        if (agClient->ensureClientConnection(resetModule) == false) {
+        if (agClient->ensureClientConnection(resetModule) == false)
+        {
           Serial.println("Cellular client connection not ready, retry in 30s...");
           delay(30000); // before retry, wait for 30s
           continue;
@@ -2077,12 +2625,13 @@ void networkingTask(void *args) {
         // Client is ready
         saveOperatorState();
         agCeClientProblemDetectedTime.store(0, std::memory_order_relaxed); // reset to default
-        agSerial->setDebug(false);         // disable at command debug
+        agSerial->setDebug(false);                                         // disable at command debug
       }
     }
 
     // If connection to AirGradient server disable don't run config and transmission schedule
-    if (configuration.isCloudConnectionDisabled()) {
+    if (configuration.isCloudConnectionDisabled())
+    {
       delay(1000);
       continue;
     }
@@ -2099,16 +2648,19 @@ void networkingTask(void *args) {
   vTaskDelete(handleNetworkTask);
 }
 
-void newMeasurementCycle() {
+void newMeasurementCycle()
+{
   // Bounded wait: if a post holds the lock, wait up to MEASUREMENT_LOCK_TIMEOUT.
   // Caps loop() stall under the external watchdog; on timeout, skip this cycle.
-  if (xSemaphoreTake(mutexMeasurementCycleQueue, pdMS_TO_TICKS(MEASUREMENT_LOCK_TIMEOUT)) != pdTRUE) {
+  if (xSemaphoreTake(mutexMeasurementCycleQueue, pdMS_TO_TICKS(MEASUREMENT_LOCK_TIMEOUT)) != pdTRUE)
+  {
     Serial.println("Skip measurement cycle, transmission holding the lock");
     return;
   }
 
   // Make sure buffer not overflow; drop the oldest entry if at capacity
-  if (measurementPayload.bufferCount >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE) {
+  if (measurementPayload.bufferCount >= MAXIMUM_MEASUREMENT_CYCLE_QUEUE)
+  {
     memmove(&measurementPayload.payloadBuffer[0], &measurementPayload.payloadBuffer[1],
             (MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1) * sizeof(AirgradientClient::PayloadBuffer));
     measurementPayload.bufferCount = MAXIMUM_MEASUREMENT_CYCLE_QUEUE - 1;
